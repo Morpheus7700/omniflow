@@ -32,22 +32,12 @@ CREATE TABLE IF NOT EXISTS orchestrator_outbox (
     event_type   STRING      NOT NULL,
     trace_parent STRING      NOT NULL,
     payload      BYTES       NOT NULL,
+    -- Projection column (additive, Sentinel-authorized exception to the schema lock): the viz
+    -- gateway consumes this changefeed as JSON and must not decode the protobuf `payload`. The
+    -- HLC sequence_engine_key is copied from the owning workflows row so the 3D timeline can order
+    -- and place the node. It carries no exactly-once semantics — the CTE guard is unchanged.
+    sequence_engine_key INT8  NOT NULL,
     occurred_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT pk_orchestrator_outbox PRIMARY KEY (aggregate_id, event_id)
 );
 
--- JSON changefeed, hardened Phase-1 topology: CRDB has no 'protobuf' changefeed format, and the
--- viz-gateway consumer decodes p2p.completed.v1 as JSON (json.NewDecoder + UseNumber). BYTES payload
--- is emitted as a \x-hex string, which the consumer already handles. Explicit topic, per-workflow
--- partition affinity, HLC emit-time for the WebGL timeline + Power BI latency, GC protection on pause.
-CREATE CHANGEFEED FOR TABLE orchestrator_outbox
-  INTO 'kafka://kafka:29092?topic_name=omniflow.p2p.completed.v1&tls_enabled=false'
-  WITH
-    format                   = 'json',
-    key_column               = 'aggregate_id',
-    unordered,
-    updated,
-    mvcc_timestamp,
-    resolved                 = '10s',
-    min_checkpoint_frequency = '10s',
-    protect_data_from_gc_on_pause;

@@ -11,7 +11,7 @@ import (
 	"omniflow/services/commbot/internal/core/domain"
 
 	"github.com/bufbuild/protovalidate-go"
-	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
+	"github.com/twmb/franz-go/pkg/kgo"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
@@ -34,8 +34,7 @@ type IdempotencyStore interface {
 }
 
 type Consumer struct {
-	consumer    *kafka.Consumer
-	dlq         *kafka.Producer
+	client      *kgo.Client
 	service     *domain.CommBotService
 	validator   *protovalidate.Validator
 	idempotency IdempotencyStore
@@ -43,12 +42,11 @@ type Consumer struct {
 	tracer      trace.Tracer
 }
 
-// NewConsumer REQUIRES a *kafka.Consumer created with `enable.auto.commit=false`.
+// NewConsumer REQUIRES a client created with `kgo.DisableAutoCommit()`.
 // Auto-commit acknowledges offsets on poll regardless of processing outcome, which
 // silently defeats the retry/DLQ contract below.
 func NewConsumer(
-	c *kafka.Consumer,
-	dlq *kafka.Producer,
+	client *kgo.Client,
 	svc *domain.CommBotService,
 	idem IdempotencyStore,
 	tp trace.TracerProvider,
@@ -58,8 +56,7 @@ func NewConsumer(
 		return nil, fmt.Errorf("init protovalidate: %w", err)
 	}
 	return &Consumer{
-		consumer:    c,
-		dlq:         dlq,
+		client:      client,
 		service:     svc,
 		validator:   v,
 		idempotency: idem,
@@ -70,33 +67,26 @@ func NewConsumer(
 
 func (c *Consumer) Start(ctx context.Context) {
 	for {
-		select {
-		case <-ctx.Done():
-			slog.Info("shutdown: draining DLQ producer")
-			c.dlq.Flush(dlqFlushTimeoutMs)
+		fetches := c.client.PollFetches(ctx)
+		if ctx.Err() != nil {
 			return
-		default:
-			ev := c.consumer.Poll(pollTimeoutMs) // bounded poll → ctx is observed on every loop
-			switch e := ev.(type) {
-			case *kafka.Message:
-				c.processMessage(ctx, e)
-			case kafka.Error:
-				if e.IsFatal() {
-					slog.Error("fatal kafka error; stopping", "error", e)
-					return
-				}
-				slog.Warn("kafka poll error", "error", e)
-			default:
-				// nil (timeout) / rebalance events: loop and re-check ctx.
-			}
 		}
+		if fetches.IsClientClosed() {
+			slog.Info("shutdown: client closed")
+			return
+		}
+
+		fetches.EachError(func(topic string, partition int32, err error) {
+			slog.Error("kafka fetch error", "topic", topic, "partition", partition, "error", err)
+		})
+
+		fetches.EachRecord(func(record *kgo.Record) {
+			c.processMessage(ctx, record)
+		})
 	}
 }
 
-func (c *Consumer) processMessage(ctx context.Context, msg *kafka.Message) {
-	// Phase-1 reconciliation: the CRDB `format=protobuf` changefeed emits the outbox ROW.
-	// If your changefeed emits the full row envelope, decode it and unmarshal the `payload`
-	// column here. This assumes the feed is projected to the bare payload — verify against Phase 1.
+func (c *Consumer) processMessage(ctx context.Context, msg *kgo.Record) {
 	var pb communicationv1.VendorEmailReceived
 	if err := proto.Unmarshal(msg.Value, &pb); err != nil {
 		c.deadLetter(ctx, msg, fmt.Errorf("deserialization poison pill: %w", err))
@@ -128,11 +118,11 @@ func (c *Consumer) processMessage(ctx context.Context, msg *kafka.Message) {
 		procErr = c.handle(ctx, email)
 		switch {
 		case procErr == nil:
-			c.commit(msg)
+			c.commit(ctx, msg)
 			return
 		case errors.Is(procErr, errAlreadyProcessed):
 			span.AddEvent("duplicate event; committing without reprocessing")
-			c.commit(msg)
+			c.commit(ctx, msg)
 			return
 		case errors.Is(procErr, domain.ErrInvalidQuarantineURI), errors.Is(procErr, domain.ErrTerminal):
 			c.deadLetter(ctx, msg, fmt.Errorf("terminal processing error: %w", procErr))
@@ -173,35 +163,25 @@ func (c *Consumer) handle(ctx context.Context, email *domain.VendorEmail) error 
 
 // deadLetter publishes to the DLQ and commits the source offset ONLY after delivery is
 // confirmed. A failed produce + committed offset = permanent data loss.
-func (c *Consumer) deadLetter(ctx context.Context, msg *kafka.Message, cause error) {
-	slog.Error("routing to DLQ", "error", cause, "partition", msg.TopicPartition)
-	topic := dlqTopic
-	deliveryChan := make(chan kafka.Event, 1)
-	err := c.dlq.Produce(&kafka.Message{
-		TopicPartition: kafka.TopicPartition{Topic: &topic, Partition: kafka.PartitionAny},
-		Key:            msg.Key,
-		Value:          msg.Value,
-		Headers:        []kafka.Header{{Key: "error_reason", Value: []byte(cause.Error())}},
-	}, deliveryChan)
-	if err != nil {
-		slog.Error("DLQ enqueue failed; NOT committing (will re-read on restart)", "error", err)
+func (c *Consumer) deadLetter(ctx context.Context, msg *kgo.Record, cause error) {
+	slog.Error("routing to DLQ", "error", cause, "partition", msg.Partition)
+	dlqRecord := &kgo.Record{
+		Topic:   dlqTopic,
+		Key:     msg.Key,
+		Value:   msg.Value,
+		Headers: append(msg.Headers, kgo.RecordHeader{Key: "error_reason", Value: []byte(cause.Error())}),
+	}
+	if err := c.client.ProduceSync(ctx, dlqRecord).FirstErr(); err != nil {
+		slog.Error("DLQ delivery failed; NOT committing", "error", err)
 		return
 	}
-	select {
-	case <-ctx.Done():
-		return
-	case ev := <-deliveryChan:
-		if m, ok := ev.(*kafka.Message); ok && m.TopicPartition.Error != nil {
-			slog.Error("DLQ delivery failed; NOT committing", "error", m.TopicPartition.Error)
-			return
-		}
-	}
-	c.commit(msg)
+	c.commit(ctx, msg)
 }
 
-func (c *Consumer) commit(msg *kafka.Message) {
-	if _, err := c.consumer.CommitMessage(msg); err != nil {
-		slog.Error("offset commit failed", "error", err, "partition", msg.TopicPartition)
+func (c *Consumer) commit(ctx context.Context, msg *kgo.Record) {
+	err := c.client.CommitRecords(ctx, msg)
+	if err != nil {
+		slog.Error("offset commit failed", "error", err, "partition", msg.Partition)
 	}
 }
 

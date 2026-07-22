@@ -36,7 +36,7 @@ func (s *Store) LoadOrCreateWorkflow(ctx context.Context, eventID string, traceP
 		ON CONFLICT (event_id) DO UPDATE SET event_id = workflows.event_id
 		RETURNING id, event_id, trace_parent, sequence_engine_key, state, current_node_index, sorted_nodes, owner_pod, lease_expires_at::text
 	`, eventID, traceParent, seqKey, string(domain.StatePending), 0, sortedNodes).Scan(
-		&wf.ID, &wf.EventID, &wf.TraceParent, &wf.SequenceEngineKey, &wf.State, 
+		&wf.ID, &wf.EventID, &wf.TraceParent, &wf.SequenceEngineKey, &wf.State,
 		&wf.CurrentNodeIndex, &wf.SortedNodes, &ownerPod, &leaseExpiresAt,
 	)
 	if err != nil {
@@ -55,7 +55,7 @@ func (s *Store) LoadWorkflowByEventID(ctx context.Context, eventID string) (*dom
 		SELECT id, event_id, trace_parent, sequence_engine_key, state, current_node_index, sorted_nodes, owner_pod, lease_expires_at::text
 		FROM workflows WHERE event_id = $1
 	`, eventID).Scan(
-		&wf.ID, &wf.EventID, &wf.TraceParent, &wf.SequenceEngineKey, &wf.State, 
+		&wf.ID, &wf.EventID, &wf.TraceParent, &wf.SequenceEngineKey, &wf.State,
 		&wf.CurrentNodeIndex, &wf.SortedNodes, &ownerPod, &leaseExpiresAt,
 	)
 	if err != nil {
@@ -85,7 +85,7 @@ func (s *Store) AcquireLease(ctx context.Context, workflowID string) (ports.Tran
 		}
 		return nil, err
 	}
-	
+
 	return &txWrapper{tx: tx}, nil
 }
 
@@ -122,15 +122,15 @@ func (s *Store) SaveCheckpoint(ctx context.Context, tx ports.Transaction, wf *do
 				WHERE id = $5
 			),
 			insert_ledger AS (
-				INSERT INTO node_execution_ledger (workflow_id, node_id, attempt) 
+				INSERT INTO node_execution_ledger (workflow_id, node_id, attempt)
 				VALUES ($5, $6, $7)
 				ON CONFLICT (workflow_id, node_id, attempt) DO NOTHING
 				RETURNING 1
 			)
-			INSERT INTO orchestrator_outbox (aggregate_id, event_type, trace_parent, payload) 
-			SELECT $5, 'NodeTransition', $8, $9
+			INSERT INTO orchestrator_outbox (aggregate_id, event_type, trace_parent, payload, sequence_engine_key)
+			SELECT $5, 'NodeTransition', $8, $9, $10
 			WHERE EXISTS (SELECT 1 FROM insert_ledger)
-		`, wf.State, wf.CurrentNodeIndex, podParam, leaseParam, wf.ID, nodeID, attempt, wf.TraceParent, payload)
+		`, wf.State, wf.CurrentNodeIndex, podParam, leaseParam, wf.ID, nodeID, attempt, wf.TraceParent, payload, wf.SequenceEngineKey)
 		return err
 	} else if nodeID != "" {
 		_, err := ptx.Exec(ctx, `

@@ -23,7 +23,7 @@ func main() {
 	// 1. Setup Postgres (for replay)
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
-		dbURL = "postgres://root@localhost:26257/defaultdb?sslmode=disable"
+		dbURL = "postgres://root@localhost:26257/omniflow?sslmode=disable"
 	}
 	db, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
@@ -45,7 +45,7 @@ func main() {
 	cl, err := kgo.NewClient(
 		kgo.SeedBrokers(kafkaBrokers...),
 		kgo.ConsumerGroup("viz-gateway"),
-		kgo.ConsumeTopics("omniflow.p2p.completed.v1", "fact_inventory_movement"),
+		kgo.ConsumeTopics("omniflow.p2p.completed.v1", "omniflow.inventory.fact_inventory_movement", "omniflow.inventory.fact_inventory_snapshot"),
 	)
 	if err != nil {
 		slog.Error("Failed to create Kafka client", "error", err)

@@ -37,7 +37,7 @@ func (c *Consumer) Start(ctx context.Context) {
 		})
 
 		fetches.EachRecord(func(record *kgo.Record) {
-			if record.Topic == "fact_inventory_movement" {
+			if record.Topic == "omniflow.inventory.fact_inventory_movement" || record.Topic == "omniflow.inventory.fact_inventory_snapshot" {
 				c.handleInventoryMovement(record)
 			} else if record.Topic == "omniflow.p2p.completed.v1" {
 				c.handleP2PCompleted(record)
@@ -115,18 +115,47 @@ func (c *Consumer) handleP2PCompleted(record *kgo.Record) {
 		return
 	}
 
-	seqKey := extractString(payload["sequence_engine_key"])
-	if seqKey == "" {
-		// Mock a seq key for testing if the orchestrator doesn't have it yet
-		seqKey = "0"
+	// 1. Watermark (CRDB native changefeed resolved timestamp) — mirror the inventory path so the
+	// client keeps a single ordering signal across both streams.
+	if resolvedRaw, ok := payload["resolved"]; ok {
+		resolvedStr := extractString(resolvedRaw)
+		c.broker.Broadcast(api.SSEEvent{
+			ID:   resolvedStr,
+			Type: api.EventWatermark,
+			Data: map[string]string{"resolved_ts": resolvedStr},
+		})
+		return
 	}
 
+	// 2. The orchestrator_outbox changefeed wraps the row in an `after` envelope. The viz gateway is
+	// deliberately JSON-native: it reads the projection columns and NEVER decodes the protobuf
+	// `payload` BYTES. sequence_engine_key is the additive projection column populated from the
+	// owning workflow.
+	afterRaw, ok := payload["after"]
+	if !ok {
+		return
+	}
+	after, ok := afterRaw.(map[string]interface{})
+	if !ok {
+		// tombstone / delete — nothing to project
+		return
+	}
+
+	// Read the HLC key as a STRING (UseNumber) — never float64 (JS precision loss on uint64).
+	seqKey := extractString(after["sequence_engine_key"])
+	if seqKey == "" {
+		return
+	}
+
+	occurredAt, _ := time.Parse(time.RFC3339Nano, extractString(after["occurred_at"]))
+
 	proj := domain.ProjectionEvent{
-		AggregateID:       extractString(payload["po_id"]),
+		AggregateID:       extractString(after["aggregate_id"]),
 		Stage:             domain.StagePOCreated,
-		Status:            extractString(payload["status"]),
-		SequenceEngineKey: seqKey,
-		OccurredAt:        time.Now(),
+		Status:            extractString(after["event_type"]), // 'NodeTransition'
+		SequenceEngineKey: seqKey,                             // string guaranteed
+		OccurredAt:        occurredAt,
+		TraceParent:       extractString(after["trace_parent"]),
 	}
 
 	c.broker.Broadcast(api.SSEEvent{

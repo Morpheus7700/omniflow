@@ -24,16 +24,3 @@ CREATE TABLE IF NOT EXISTS commbot_outbox (
     CONSTRAINT pk_commbot_outbox PRIMARY KEY (aggregate_id, event_id)
 );
 
--- Emits classified events to the P2P Orchestrator. Same topology/guards as the Phase 1 changefeed:
--- native protobuf, per-vendor partition affinity via key_column, HLC emit-time for BI/viz ordering.
-CREATE CHANGEFEED FOR TABLE commbot_outbox
-  INTO 'kafka://kafka:29092?topic_name=omniflow.orchestration.v1&tls_enabled=false'
-  WITH
-    format                    = 'json',
-    key_column                = 'aggregate_id',
-    unordered,
-    updated,
-    mvcc_timestamp,
-    resolved                  = '10s',
-    min_checkpoint_frequency  = '10s',
-    protect_data_from_gc_on_pause;

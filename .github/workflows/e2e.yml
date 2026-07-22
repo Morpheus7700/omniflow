@@ -1,0 +1,178 @@
+name: OmniFlow CI + E2E
+
+# Make-It-Real gate: build both Go modules, then actually BOOT the stack and prove one seeded
+# procurement event flows end-to-end — through the real CRDB→Kafka changefeed spine, the DAG
+# orchestrator's human-in-the-loop suspend/resume, and out to the viz SSE stream. No simulated logs.
+#
+# REQUIRED repo secrets (Settings → Secrets and variables → Actions):
+#   CRDB_LICENSE  — CockroachDB Enterprise (free tier) license key; Kafka-sink changefeeds need it.
+#   CRDB_ORG      — the organization string the license was issued to (must match exactly).
+# Without CRDB_LICENSE the e2e job is skipped (build still runs) so forks/PRs don't hard-fail.
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build + vet (both modules)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - name: root module
+        run: |
+          CGO_ENABLED=0 go build ./...
+          go vet ./...
+      - name: viz-gateway module
+        working-directory: services/viz-gateway
+        run: |
+          CGO_ENABLED=0 go build ./...
+          go vet ./...
+
+  e2e:
+    name: boot stack + seed E2E
+    needs: build
+    runs-on: ubuntu-latest
+    # Skip cleanly when the license secret is absent (e.g. fork PRs).
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    env:
+      CRDB_LICENSE: ${{ secrets.CRDB_LICENSE }}
+      CRDB_ORG: ${{ secrets.CRDB_ORG }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Guard — license present?
+        id: guard
+        run: |
+          if [ -z "${CRDB_LICENSE}" ]; then
+            echo "CRDB_LICENSE secret not set — skipping E2E (build already passed)."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-go@v5
+        if: steps.guard.outputs.run == 'true'
+        with:
+          go-version: '1.25'
+
+      # Single source of truth: scripts/e2e.sh boots the stack, waits for crdb-init, asserts >=3
+      # running changefeeds, connects to the SSE stream BEFORE seeding (the gateway has no backlog),
+      # seeds one event through the real changefeed spine + HITL approval, asserts the seeded
+      # sequence_engine_key reaches /api/stream, dumps logs on failure, and always tears down.
+      - name: Run end-to-end proof
+        if: steps.guard.outputs.run == 'true'
+        run: bash scripts/e2e.sh
+
+  failtest-resume:
+    name: test durable checkpoint resume
+    needs: build
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    env:
+      CRDB_LICENSE: ${{ secrets.CRDB_LICENSE }}
+      CRDB_ORG: ${{ secrets.CRDB_ORG }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Guard — license present?
+        id: guard
+        run: |
+          if [ -z "${CRDB_LICENSE}" ]; then
+            echo "CRDB_LICENSE secret not set — skipping failtest."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-go@v5
+        if: steps.guard.outputs.run == 'true'
+        with:
+          go-version: '1.25'
+
+      - name: Run pod survival test
+        if: steps.guard.outputs.run == 'true'
+        run: bash scripts/failtest_killed_pod.sh
+
+  failtest-exactly-once:
+    name: test exactly-once delivery suppression
+    needs: build
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    env:
+      CRDB_LICENSE: ${{ secrets.CRDB_LICENSE }}
+      CRDB_ORG: ${{ secrets.CRDB_ORG }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Guard — license present?
+        id: guard
+        run: |
+          if [ -z "${CRDB_LICENSE}" ]; then
+            echo "CRDB_LICENSE secret not set — skipping failtest."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-go@v5
+        if: steps.guard.outputs.run == 'true'
+        with:
+          go-version: '1.25'
+
+      - name: Run exactly-once test
+        if: steps.guard.outputs.run == 'true'
+        run: bash scripts/failtest_exactly_once.sh
+
+  security:
+    name: security scan (gosec + trivy)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write   # upload SARIF to the repo Security tab (free on public repos)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: gosec — Go SAST (both modules)
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          # -no-fail: report findings without gating the build; we triage via the Security tab.
+          gosec -no-fail -fmt sarif -out gosec-root.sarif ./...
+          ( cd services/viz-gateway && gosec -no-fail -fmt sarif -out ../../gosec-viz.sarif ./... )
+      - name: upload gosec (root)
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: gosec-root.sarif
+          category: gosec-root
+      - name: upload gosec (viz-gateway)
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: gosec-viz.sarif
+          category: gosec-viz
+
+      - name: Trivy — dependency + config/CVE scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,misconfig,secret
+          severity: CRITICAL,HIGH
+          exit-code: '0'          # report-only for now; flip to '1' once findings are triaged
+          format: sarif
+          output: trivy.sarif
+      - name: upload Trivy
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy.sarif
+          category: trivy

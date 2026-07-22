@@ -1,9 +1,6 @@
 -- CockroachDB Operational Schema for Inventory Intelligence
 
--- Enable Enterprise Features for Changefeeds
-SET CLUSTER SETTING kv.rangefeed.enabled = true;
-SET CLUSTER SETTING cluster.organization = 'OmniFlow';
--- SET CLUSTER SETTING enterprise.license = '...'; -- Placeholder for actual license if needed
+
 
 CREATE TABLE IF NOT EXISTS processed_events (
     event_id STRING PRIMARY KEY,
@@ -65,12 +62,4 @@ CREATE TABLE IF NOT EXISTS fact_inventory_snapshot (
     last_updated_at TIMESTAMP NOT NULL,
     sequence_engine_key INT8 NOT NULL
 );
-
--- CREATE CHANGEFEED to stream fact outbox tables into Kafka
--- These topics represent the staging ingestion points for BigQuery Storage Write API
-CREATE CHANGEFEED FOR TABLE fact_inventory_movement, fact_inventory_snapshot
-  INTO 'kafka://kafka:29092?tls_enabled=false'
-  WITH updated, resolved='10s', mvcc_timestamp, format='json',
-       topic_prefix='omniflow.inventory.', min_checkpoint_frequency='10s',
-       protect_data_from_gc_on_pause;
 

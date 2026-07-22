@@ -1,0 +1,124 @@
+services:
+  cockroachdb:
+    image: cockroachdb/cockroach:v24.3.3
+    command: start-single-node --insecure --accept-sql-without-tls
+    ports:
+      - "26257:26257"
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "cockroach sql --insecure -e 'SELECT 1'"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  kafka:
+    image: apache/kafka-native:3.8.0
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:29093,INTERNAL://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,INTERNAL://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:29093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      CLUSTER_ID: "omniflow-cluster-id-1234"
+    volumes:
+      - kafka-data:/tmp/kafka-logs
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  crdb-init:
+    image: cockroachdb/cockroach:v24.3.3
+    depends_on:
+      cockroachdb:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./infrastructure:/infrastructure:ro
+    entrypoint: ["/bin/bash", "/infrastructure/init/crdb-init.sh"]
+    environment:
+      CRDB_LICENSE: ${CRDB_LICENSE:-}
+      CRDB_ORG: ${CRDB_ORG:-OmniFlow}
+    restart: "no"
+
+  # Deterministic LLM stand-in for the E2E `email` seed mode. Lets the LOCKED CommBot classification
+  # path run without a real model or spend. Never part of the shipped system.
+  mock-llm:
+    build:
+      context: .
+      dockerfile: tools/mock-llm/Dockerfile
+    environment:
+      MOCK_LLM_ADDR: ":4000"
+      MOCK_LLM_INTENT: "1"
+
+  commbot:
+    build:
+      context: .
+      dockerfile: services/commbot/Dockerfile
+    depends_on:
+      crdb-init:
+        condition: service_completed_successfully
+    environment:
+      CRDB_DSN: "postgres://root@cockroachdb:26257/omniflow?sslmode=disable"
+      KAFKA_BOOTSTRAP: "kafka:29092"
+      # Used only by the `email` seed mode; harmless when the default `outbox` mode is used.
+      LITELLM_URL: "http://mock-llm:4000"
+      OBJECT_STORE_HOSTS: "storage.googleapis.com,raw.githubusercontent.com"
+
+  inventory-intelligence:
+    build:
+      context: .
+      dockerfile: services/inventory-intelligence/Dockerfile
+    depends_on:
+      crdb-init:
+        condition: service_completed_successfully
+    environment:
+      CRDB_DSN: "postgres://root@cockroachdb:26257/omniflow?sslmode=disable"
+      KAFKA_BROKERS: "kafka:29092"
+
+  p2p-orchestrator:
+    build:
+      context: .
+      dockerfile: services/p2p-orchestrator/Dockerfile
+    depends_on:
+      crdb-init:
+        condition: service_completed_successfully
+    environment:
+      CRDB_DSN: "postgres://root@cockroachdb:26257/omniflow?sslmode=disable"
+      KAFKA_BROKERS: "kafka:29092"
+
+  viz-gateway:
+    build:
+      context: .
+      dockerfile: services/viz-gateway/Dockerfile
+    depends_on:
+      crdb-init:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: "postgres://root@cockroachdb:26257/omniflow?sslmode=disable"
+      CRDB_DSN: "postgres://root@cockroachdb:26257/omniflow?sslmode=disable"
+      KAFKA_BROKERS: "kafka:29092"
+    ports:
+      - "8081:8080"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_SSE_URL: "http://localhost:8081/api/stream"
+    depends_on:
+      crdb-init:
+        condition: service_completed_successfully
+    ports:
+      - "3000:3000"
+
+volumes:
+  kafka-data:

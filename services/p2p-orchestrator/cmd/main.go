@@ -7,15 +7,16 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
-	
+
 	"omniflow/services/p2p-orchestrator/internal/adapters/inbound/kafka"
 	"omniflow/services/p2p-orchestrator/internal/adapters/outbound/crdb"
 	"omniflow/services/p2p-orchestrator/internal/core"
 	"omniflow/services/p2p-orchestrator/internal/core/domain"
 
-	ckafka "github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	"github.com/jackc/pgx/v5/pgxpool"
-	
+	"github.com/twmb/franz-go/pkg/kgo"
+	"strings"
+
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/propagation"
@@ -28,13 +29,13 @@ func main() {
 
 	// 1. Init OTel Tracing Provider with OTLP Exporter and Batcher
 	otel.SetTextMapPropagator(propagation.TraceContext{})
-	
+
 	exporter, err := otlptracehttp.New(ctx, otlptracehttp.WithEndpoint("localhost:4318"), otlptracehttp.WithInsecure())
 	if err != nil {
 		slog.Error("Failed to create OTLP exporter", "error", err)
 		os.Exit(1)
 	}
-	
+
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exporter),
 	)
@@ -42,7 +43,11 @@ func main() {
 	defer func() { _ = tp.Shutdown(context.Background()) }()
 
 	// 2. Init DB Pool
-	pool, err := pgxpool.New(ctx, "postgres://root@localhost:26257/defaultdb?sslmode=disable")
+	dsn := os.Getenv("CRDB_DSN")
+	if dsn == "" {
+		dsn = "postgres://root@localhost:26257/defaultdb?sslmode=disable"
+	}
+	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		slog.Error("Failed to connect to CRDB", "error", err)
 		os.Exit(1)
@@ -61,27 +66,24 @@ func main() {
 	svc := core.NewOrchestratorService(store, dag)
 
 	// 3. Init Kafka
-	consumer, err := ckafka.NewConsumer(&ckafka.ConfigMap{
-		"bootstrap.servers":  "localhost:9092",
-		"group.id":           "p2p-orchestrator",
-		"auto.offset.reset":  "earliest",
-		"enable.auto.commit": false,
-	})
+	brokers := os.Getenv("KAFKA_BROKERS")
+	if brokers == "" {
+		brokers = "localhost:9092"
+	}
+	client, err := kgo.NewClient(
+		kgo.SeedBrokers(strings.Split(brokers, ",")...),
+		kgo.ConsumerGroup("p2p-orchestrator"),
+		kgo.ConsumeTopics("omniflow.orchestration.v1", "omniflow.p2p.approval.v1"),
+		kgo.DisableAutoCommit(),
+	)
 	if err != nil {
 		slog.Error("Failed to create consumer", "error", err)
 		os.Exit(1)
 	}
-	defer consumer.Close()
+	defer client.Close()
 
-	producer, err := ckafka.NewProducer(&ckafka.ConfigMap{"bootstrap.servers": "localhost:9092"})
-	if err != nil {
-		slog.Error("Failed to create producer", "error", err)
-		os.Exit(1)
-	}
-	defer producer.Close()
+	adapter := kafka.NewConsumer(client, svc)
 
-	adapter := kafka.NewConsumer(consumer, producer, svc)
-	
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -95,7 +97,6 @@ func main() {
 
 	slog.Info("Shutting down orchestrator gracefully...")
 	cancel()
-	
+
 	wg.Wait()
-	producer.Flush(5000) // Flush DLQ
 }

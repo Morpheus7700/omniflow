@@ -6,15 +6,15 @@ import (
 	"log/slog"
 	"time"
 
-	"omniflow/services/p2p-orchestrator/internal/core/domain"
 	v1 "omniflow/contracts/communication/v1"
-	
+	"omniflow/services/p2p-orchestrator/internal/core/domain"
+
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"strings"
 
-	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
+	"github.com/twmb/franz-go/pkg/kgo"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	"google.golang.org/protobuf/proto"
@@ -35,44 +35,36 @@ type OrchestratorService interface {
 }
 
 type Consumer struct {
-	consumer *kafka.Consumer
-	dlq      *kafka.Producer
-	service  OrchestratorService
+	client  *kgo.Client
+	service OrchestratorService
 }
 
-func NewConsumer(c *kafka.Consumer, p *kafka.Producer, svc OrchestratorService) *Consumer {
-	return &Consumer{consumer: c, dlq: p, service: svc}
+func NewConsumer(c *kgo.Client, svc OrchestratorService) *Consumer {
+	return &Consumer{client: c, service: svc}
 }
 
 func (c *Consumer) Start(ctx context.Context) {
-	// Subscribe to both changefeed and external approval events
-	_ = c.consumer.SubscribeTopics([]string{"omniflow.orchestration.v1", "omniflow.p2p.approval.v1"}, nil)
-
 	for {
-		select {
-		case <-ctx.Done():
+		fetches := c.client.PollFetches(ctx)
+		if ctx.Err() != nil {
 			return
-		default:
-			ev := c.consumer.Poll(100)
-			if ev == nil {
-				continue
-			}
-
-			switch e := ev.(type) {
-			case *kafka.Message:
-				c.processMessageWithRetry(ctx, e)
-			case kafka.Error:
-				slog.Error("Kafka error", "error", e)
-			}
 		}
+		if fetches.IsClientClosed() {
+			return
+		}
+
+		fetches.EachError(func(topic string, partition int32, err error) {
+			slog.Error("Kafka error", "topic", topic, "partition", partition, "error", err)
+		})
+
+		fetches.EachRecord(func(record *kgo.Record) {
+			c.processMessageWithRetry(ctx, record)
+		})
 	}
 }
 
-func (c *Consumer) processMessageWithRetry(ctx context.Context, msg *kafka.Message) {
-	topic := ""
-	if msg.TopicPartition.Topic != nil {
-		topic = *msg.TopicPartition.Topic
-	}
+func (c *Consumer) processMessageWithRetry(ctx context.Context, msg *kgo.Record) {
+	topic := msg.Topic
 
 	var traceParent string
 	var isApproval bool
@@ -92,7 +84,7 @@ func (c *Consumer) processMessageWithRetry(ctx context.Context, msg *kafka.Messa
 				Payload string `json:"payload"`
 			} `json:"after"`
 		}
-		
+
 		if err := json.Unmarshal(msg.Value, &env); err != nil {
 			c.routeToDLQ(ctx, msg, err)
 			return
@@ -100,13 +92,13 @@ func (c *Consumer) processMessageWithRetry(ctx context.Context, msg *kafka.Messa
 
 		// Skip resolved-timestamp messages without erroring
 		if env.Resolved != nil {
-			c.commitOffset(msg)
+			c.commitOffset(ctx, msg)
 			return
 		}
 
 		if env.After.Payload == "" {
 			// tombstone / delete or empty row — nothing to process
-			c.commitOffset(msg)
+			c.commitOffset(ctx, msg)
 			return
 		}
 		payloadBytes, err := decodeChangefeedBytes(env.After.Payload)
@@ -121,11 +113,11 @@ func (c *Consumer) processMessageWithRetry(ctx context.Context, msg *kafka.Messa
 			return
 		}
 		traceParent = payload.TraceParent
-		
+
 		// Update msg.Value so the underlying service.ProcessEvent receives the unmarshaled payload bytes
 		msg.Value = payloadBytes
 	}
-	
+
 	carrier := propagation.MapCarrier{"traceparent": traceParent}
 	ctx = otel.GetTextMapPropagator().Extract(ctx, carrier)
 
@@ -139,7 +131,7 @@ func (c *Consumer) processMessageWithRetry(ctx context.Context, msg *kafka.Messa
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		err := c.service.ProcessEvent(ctx, msg.Value, isApproval)
 		if err == nil {
-			c.commitOffset(msg)
+			c.commitOffset(ctx, msg)
 			return
 		}
 
@@ -173,40 +165,29 @@ func (c *Consumer) processMessageWithRetry(ctx context.Context, msg *kafka.Messa
 	c.routeToDLQ(ctx, msg, errors.New("retries exhausted"))
 }
 
-func (c *Consumer) routeToDLQ(ctx context.Context, msg *kafka.Message, err error) {
+func (c *Consumer) routeToDLQ(ctx context.Context, msg *kgo.Record, err error) {
 	topic := "omniflow.orchestration.v1.dlq"
-	deliveryChan := make(chan kafka.Event)
 
-	errProduce := c.dlq.Produce(&kafka.Message{
-		TopicPartition: kafka.TopicPartition{Topic: &topic, Partition: kafka.PartitionAny},
-		Key:            msg.Key,
-		Value:          msg.Value,
-		Headers: []kafka.Header{
-			{Key: "error_reason", Value: []byte(err.Error())},
-		},
-	}, deliveryChan)
+	dlqRecord := &kgo.Record{
+		Topic: topic,
+		Key:   msg.Key,
+		Value: msg.Value,
+		Headers: append(msg.Headers, kgo.RecordHeader{
+			Key:   "error_reason",
+			Value: []byte(err.Error()),
+		}),
+	}
 
+	errProduce := c.client.ProduceSync(ctx, dlqRecord).FirstErr()
 	if errProduce != nil {
 		slog.Error("Failed to enqueue to DLQ", "error", errProduce)
 		return
 	}
-
-	select {
-	case <-ctx.Done():
-		slog.Warn("Context cancelled while awaiting DLQ delivery")
-		return
-	case e := <-deliveryChan:
-		m := e.(*kafka.Message)
-		if m.TopicPartition.Error != nil {
-			slog.Error("DLQ delivery failed", "error", m.TopicPartition.Error)
-			return
-		}
-		c.commitOffset(msg)
-	}
+	c.commitOffset(ctx, msg)
 }
 
-func (c *Consumer) commitOffset(msg *kafka.Message) {
-	_, err := c.consumer.CommitMessage(msg)
+func (c *Consumer) commitOffset(ctx context.Context, msg *kgo.Record) {
+	err := c.client.CommitRecords(ctx, msg)
 	if err != nil {
 		slog.Error("Failed to commit offset", "error", err)
 	}

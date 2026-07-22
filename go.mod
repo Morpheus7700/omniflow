@@ -5,7 +5,6 @@ go 1.25.0
 require (
 	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.31.0-20231030212536-12f9cba37c9d.2
 	github.com/bufbuild/protovalidate-go v0.4.0
-	github.com/confluentinc/confluent-kafka-go/v2 v2.4.0
 	github.com/jackc/pgx/v5 v5.5.5
 	github.com/shopspring/decimal v1.4.0
 	github.com/twmb/franz-go v1.21.5

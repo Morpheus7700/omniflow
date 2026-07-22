@@ -15,8 +15,8 @@ import (
 	"omniflow/services/commbot/internal/adapters/outbound/llm"
 	"omniflow/services/commbot/internal/core/domain"
 
-	confluent "github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/twmb/franz-go/pkg/kgo"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/propagation"
@@ -64,35 +64,25 @@ func run() error {
 	// ── Core domain service ──────────────────────────────────────────────────
 	svc := domain.NewCommBotService(gateway, repo, tp)
 
-	// ── Kafka consumer — auto-commit DISABLED (required by the retry/DLQ contract) ──
-	consumer, err := confluent.NewConsumer(&confluent.ConfigMap{
-		"bootstrap.servers":  cfg.kafkaBootstrap,
-		"group.id":           "commbot",
-		"auto.offset.reset":  "earliest",
-		"enable.auto.commit": false,
-	})
+	// ── Kafka client — auto-commit DISABLED (required by the retry/DLQ contract) ──
+	client, err := kgo.NewClient(
+		kgo.SeedBrokers(strings.Split(cfg.kafkaBootstrap, ",")...),
+		kgo.ConsumerGroup("commbot"),
+		kgo.ConsumeTopics(cfg.inputTopic),
+		kgo.DisableAutoCommit(),
+	)
 	if err != nil {
 		return err
 	}
-	defer consumer.Close()
-	if err := consumer.Subscribe(cfg.inputTopic, nil); err != nil {
-		return err
-	}
+	defer client.Close()
 
-	// ── DLQ producer (poison pills) ──────────────────────────────────────────
-	dlq, err := confluent.NewProducer(&confluent.ConfigMap{"bootstrap.servers": cfg.kafkaBootstrap})
-	if err != nil {
-		return err
-	}
-	defer dlq.Close()
-
-	adapter, err := inkafka.NewConsumer(consumer, dlq, svc, repo, tp)
+	adapter, err := inkafka.NewConsumer(client, svc, repo, tp)
 	if err != nil {
 		return err
 	}
 
 	slog.Info("commbot starting", "input_topic", cfg.inputTopic, "bootstrap", cfg.kafkaBootstrap)
-	adapter.Start(ctx) // blocks until ctx is cancelled, then drains the DLQ producer
+	adapter.Start(ctx) // blocks until ctx is cancelled
 	slog.Info("commbot stopped cleanly")
 	return nil
 }

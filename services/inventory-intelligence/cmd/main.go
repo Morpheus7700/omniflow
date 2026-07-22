@@ -45,7 +45,7 @@ func main() {
 	client, err := kgo.NewClient(
 		kgo.SeedBrokers(strings.Split(kafkaBrokers, ",")...),
 		kgo.ConsumerGroup("inventory-intelligence-v1"),
-		kgo.ConsumeTopics("omniflow.p2p.completed.v1"),
+		kgo.ConsumeTopics("omniflow.inventory.movement.v1"),
 		kgo.DisableAutoCommit(), // We commit manually after processing
 	)
 	if err != nil {

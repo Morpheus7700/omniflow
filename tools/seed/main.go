@@ -41,6 +41,7 @@ import (
 	"github.com/twmb/franz-go/pkg/kgo"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	inventoryv1 "omniflow/contracts/inventory/v1"
 )
 
 const (
@@ -86,12 +87,25 @@ func run() error {
 		return nil
 	}
 
-	eventID, err := uuidV4()
-	if err != nil {
-		return fmt.Errorf("generate event id: %w", err)
+	eventID := os.Getenv("SEED_EVENT_ID")
+	if eventID == "" {
+		var err error
+		eventID, err = uuidV4()
+		if err != nil {
+			return fmt.Errorf("generate event id: %w", err)
+		}
 	}
-	seqKey := uint64(time.Now().UnixNano()) // monotonic HLC-ish key, unique per run
-	traceParent := newTraceParent()
+	
+	var seqKey uint64
+	if s := os.Getenv("SEED_INV_SEQ"); s != "" {
+		if _, err := fmt.Sscanf(s, "%d", &seqKey); err != nil {
+			return fmt.Errorf("parse SEED_INV_SEQ: %w", err)
+		}
+	} else {
+		seqKey = uint64(time.Now().UnixNano()) // monotonic HLC-ish key, unique per run
+	}
+
+	traceParent := env("SEED_TRACE_PARENT", newTraceParent())
 	aggregateID := env("SEED_VENDOR_ID", "VENDOR-ACME-001")
 
 	log.Printf("seeding mode=%s event_id=%s sequence_engine_key=%d", mode, eventID, seqKey)
@@ -111,8 +125,15 @@ func run() error {
 		if err := seedEmail(ctx, brokers, eventID, traceParent, aggregateID, seqKey); err != nil {
 			return err
 		}
+	case "inventory":
+		if err := seedInventory(ctx, brokers, eventID, traceParent, aggregateID, seqKey); err != nil {
+			return err
+		}
+		fmt.Printf("SEED_EVENT_ID=%s\n", eventID)
+		fmt.Printf("SEED_SEQUENCE_ENGINE_KEY=%d\n", seqKey)
+		return nil
 	default:
-		return fmt.Errorf("unknown SEED_MODE %q (want outbox|email)", mode)
+		return fmt.Errorf("unknown SEED_MODE %q (want outbox|email|inventory)", mode)
 	}
 
 	// Wait for the orchestrator to create + suspend the workflow at human_approval before we approve,
@@ -282,4 +303,49 @@ func env(k, def string) string {
 		return v
 	}
 	return def
+}
+
+func seedInventory(ctx context.Context, brokers []string, eventID, traceParent, aggregateID string, seqKey uint64) error {
+	now := timestamppb.Now()
+
+	movTypeStr := env("SEED_INV_MOVEMENT_TYPE", "receipt")
+	var movType inventoryv1.InventoryMovementReceived_MovementType
+	switch movTypeStr {
+	case "receipt":
+		movType = inventoryv1.InventoryMovementReceived_MOVEMENT_TYPE_RECEIPT
+	case "consumption":
+		movType = inventoryv1.InventoryMovementReceived_MOVEMENT_TYPE_CONSUMPTION
+	case "adjustment":
+		movType = inventoryv1.InventoryMovementReceived_MOVEMENT_TYPE_ADJUSTMENT
+	default:
+		return fmt.Errorf("unknown movement type: %s", movTypeStr)
+	}
+
+	sku := env("SEED_INV_SKU", "SKU-TEST-001")
+	qty := env("SEED_INV_QTY", "10")
+	unitCost := env("SEED_INV_UNIT_COST", "5.00")
+	loc := env("SEED_INV_LOCATION", "LOC-1")
+	vendor := env("SEED_INV_VENDOR", "VENDOR-ACME-001")
+
+	movement := &inventoryv1.InventoryMovementReceived{
+		EventId:           eventID,
+		TraceParent:       traceParent,
+		AggregateId:       aggregateID,
+		OccurredAt:        now,
+		PublishedAt:       now,
+		SequenceEngineKey: seqKey,
+		MovementType:      movType,
+		Sku:               sku,
+		MdmVendorId:       vendor,
+		LocationId:        loc,
+		Quantity:          qty,
+		UnitCost:          unitCost,
+	}
+
+	value, err := proto.Marshal(movement)
+	if err != nil {
+		return fmt.Errorf("marshal inventory movement: %w", err)
+	}
+
+	return produce(ctx, brokers, "omniflow.inventory.movement.v1", sku, value)
 }

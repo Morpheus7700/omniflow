@@ -2,9 +2,6 @@ package kafka
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -50,12 +47,6 @@ func (c *Consumer) Start(ctx context.Context) {
 		})
 
 		fetches.EachRecord(func(record *kgo.Record) {
-			// Skip resolved messages natively
-			if isResolvedMessage(record) {
-				c.client.MarkCommitRecords(record)
-				return
-			}
-
 			err := c.processRecord(ctx, record)
 			switch {
 			case err == nil:
@@ -74,44 +65,9 @@ func (c *Consumer) Start(ctx context.Context) {
 	}
 }
 
-func isResolvedMessage(record *kgo.Record) bool {
-	var envelope map[string]interface{}
-	if err := json.Unmarshal(record.Value, &envelope); err == nil {
-		if _, ok := envelope["resolved"]; ok {
-			return true
-		}
-	}
-	return false
-}
-
 func (c *Consumer) processRecord(ctx context.Context, record *kgo.Record) error {
-	var envelope struct {
-		Payload struct {
-			After string `json:"after"`
-		} `json:"payload"`
-	}
-	if err := json.Unmarshal(record.Value, &envelope); err != nil {
-		return fmt.Errorf("%w: invalid JSON envelope: %v", domain.ErrTerminal, err)
-	}
-
-	rawStr := envelope.Payload.After
-	var payloadBytes []byte
-	var err error
-
-	if len(rawStr) >= 2 && rawStr[:2] == "\\x" {
-		payloadBytes, err = hex.DecodeString(rawStr[2:])
-		if err != nil {
-			return fmt.Errorf("%w: invalid hex: %v", domain.ErrTerminal, err)
-		}
-	} else {
-		payloadBytes, err = base64.StdEncoding.DecodeString(rawStr)
-		if err != nil {
-			return fmt.Errorf("%w: invalid base64: %v", domain.ErrTerminal, err)
-		}
-	}
-
 	var pb inventoryv1.InventoryMovementReceived
-	if err := proto.Unmarshal(payloadBytes, &pb); err != nil {
+	if err := proto.Unmarshal(record.Value, &pb); err != nil {
 		return fmt.Errorf("%w: deserialization poison pill: %v", domain.ErrTerminal, err)
 	}
 	if err := c.validator.Validate(&pb); err != nil {

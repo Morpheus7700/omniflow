@@ -132,6 +132,36 @@ jobs:
         if: steps.guard.outputs.run == 'true'
         run: bash scripts/failtest_exactly_once.sh
 
+  failtest-restatement:
+    name: test FIFO late-arrival restatement
+    needs: build
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    env:
+      CRDB_LICENSE: ${{ secrets.CRDB_LICENSE }}
+      CRDB_ORG: ${{ secrets.CRDB_ORG }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Guard — license present?
+        id: guard
+        run: |
+          if [ -z "${CRDB_LICENSE}" ]; then
+            echo "CRDB_LICENSE secret not set — skipping failtest."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-go@v5
+        if: steps.guard.outputs.run == 'true'
+        with:
+          go-version: '1.25'
+
+      - name: Run FIFO restatement test
+        if: steps.guard.outputs.run == 'true'
+        run: bash scripts/failtest_fifo_restatement.sh
+
   security:
     name: security scan (gosec + trivy)
     runs-on: ubuntu-latest

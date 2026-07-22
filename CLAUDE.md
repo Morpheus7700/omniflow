@@ -10,6 +10,11 @@ redirection prompt the user pastes back to Antigravity. Canonical state: `docs/a
 audit trail: `docs/audit/COMPOSE_PLAN_AUDIT.md`, builder prompts: `docs/antigravity/`.
 Full architecture map: `OMNIFLOW_CONTEXT_FOR_GEMINI.md`.
 
+## Start here every session → the knowledge base
+**`docs/kb/INDEX.md`** is an Obsidian-style vault for both Claude and Antigravity — read it first to
+restore context cheaply instead of re-deriving from code. `docs/kb/05-gotchas.md` is the highest-value
+note (the recurring bugs); read it before editing scripts, consumers, or schema.
+
 ## Current mandate — "Make It Real"
 Prove the existing core RUNS end-to-end and SURVIVES failure. STOP adding blueprint surface
 (K8s/Istio/Neo4j/Pinecone/ADK/LiteLLM/BigQuery/Power BI). The liability we kill is "compiles but

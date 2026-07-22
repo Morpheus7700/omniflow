@@ -1,0 +1,8 @@
+version: v2
+# opt: module=omniflow strips the "omniflow/" prefix from each go_package option, so a
+# go_package of "omniflow/contracts/communication/v1" is written to ./contracts/communication/v1/,
+# which is exactly the path the services import. No managed-mode override needed.
+plugins:
+  - local: protoc-gen-go
+    out: .
+    opt: module=omniflow

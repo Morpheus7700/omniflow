@@ -1,0 +1,21 @@
+# Normalize text on checkin; keep LF for files consumed by Linux containers/tooling.
+* text=auto eol=lf
+
+# Scripts and configs that MUST be LF (executed inside Linux containers)
+*.sh        text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+Dockerfile* text eol=lf
+*.sql       text eol=lf
+
+# Go/TS source: LF
+*.go   text eol=lf
+*.ts   text eol=lf
+*.tsx  text eol=lf
+*.mjs  text eol=lf
+
+# Binary assets — never touch
+*.ico  binary
+*.pdf  binary
+*.png  binary
+*.svg  text eol=lf

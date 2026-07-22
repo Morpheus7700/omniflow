@@ -1,0 +1,46 @@
+syntax = "proto3";
+package omniflow.inventory.v1;
+option go_package = "omniflow/contracts/inventory/v1;inventoryv1";
+
+import "google/protobuf/timestamp.proto";
+import "buf/validate/validate.proto";
+
+message InventoryMovementReceived {
+  enum MovementType {
+    MOVEMENT_TYPE_UNSPECIFIED   = 0;
+    MOVEMENT_TYPE_RECEIPT       = 1;
+    MOVEMENT_TYPE_CONSUMPTION   = 2;
+    MOVEMENT_TYPE_ADJUSTMENT    = 3;
+  }
+
+  string event_id     = 1  [(buf.validate.field).string.uuid = true];
+  string trace_parent = 2  [(buf.validate.field).string.pattern = "^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$"];
+  string aggregate_id = 3  [(buf.validate.field).string.min_len = 1];
+  google.protobuf.Timestamp occurred_at  = 4 [(buf.validate.field).required = true];
+  google.protobuf.Timestamp published_at = 5 [(buf.validate.field).required = true];
+  google.protobuf.Timestamp cdc_emit_ts  = 6;
+  uint64 sequence_engine_key = 7;
+  
+  MovementType movement_type = 8 [(buf.validate.field).enum.defined_only = true];
+  
+  string sku = 9 [(buf.validate.field).string.min_len = 1];
+  string mdm_vendor_id = 10 [(buf.validate.field).string.min_len = 1];
+  string location_id = 11 [(buf.validate.field).string.min_len = 1];
+  
+  string quantity = 12 [(buf.validate.field).string.pattern = "^-?[0-9]+(\\.[0-9]+)?$"];
+  string unit_cost = 13 [(buf.validate.field).string.pattern = "^[0-9]+(\\.[0-9]+)?$"];
+}
+
+message InventorySnapshot {
+  string snapshot_id = 1 [(buf.validate.field).string.uuid = true];
+  google.protobuf.Timestamp snapshot_date = 2 [(buf.validate.field).required = true];
+  string sku = 3 [(buf.validate.field).string.min_len = 1];
+  string mdm_vendor_id = 4 [(buf.validate.field).string.min_len = 1];
+  string location_id = 5 [(buf.validate.field).string.min_len = 1];
+  
+  string qty_on_hand = 6 [(buf.validate.field).string.pattern = "^-?[0-9]+(\\.[0-9]+)?$"];
+  string fifo_total_value = 7 [(buf.validate.field).string.pattern = "^[0-9]+(\\.[0-9]+)?$"];
+  string moving_avg_cost = 8 [(buf.validate.field).string.pattern = "^[0-9]+(\\.[0-9]+)?$"];
+  
+  google.protobuf.Timestamp last_updated_at = 9 [(buf.validate.field).required = true];
+}

@@ -1,0 +1,50 @@
+syntax = "proto3";
+package omniflow.communication.v1;
+option go_package = "omniflow/contracts/communication/v1;communicationv1";
+
+import "google/protobuf/timestamp.proto";
+import "buf/validate/validate.proto";
+
+message Attachment {
+    string file_name = 1;
+    string mime_type = 2;
+    string secure_storage_uri = 3;
+    string sha256_hash = 4;
+}
+
+message VendorEmailReceived {
+  enum VisualizationStage {              // numbers MUST match domain.VisualizationStage
+    VISUALIZATION_STAGE_UNSPECIFIED   = 0;
+    VISUALIZATION_STAGE_INGESTED      = 1;
+    VISUALIZATION_STAGE_CLASSIFIED    = 2;
+    VISUALIZATION_STAGE_ORCHESTRATING = 3;
+  }
+  enum Intent {                          // numbers MUST match domain.Intent
+    INTENT_UNSPECIFIED            = 0;
+    INTENT_INVOICE_SUBMISSION     = 1;
+    INTENT_PAYMENT_DISPUTE        = 2;
+    INTENT_PURCHASE_ORDER_INQUIRY = 3;
+    INTENT_GENERAL_SUPPORT        = 4;
+  }
+  string event_id     = 1  [(buf.validate.field).string.uuid = true];
+  string trace_parent = 2  [(buf.validate.field).string.pattern = "^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$"];
+  string aggregate_id = 3  [(buf.validate.field).string.min_len = 1];
+  google.protobuf.Timestamp occurred_at  = 4 [(buf.validate.field).required = true];
+  google.protobuf.Timestamp published_at = 5 [(buf.validate.field).required = true];
+  google.protobuf.Timestamp cdc_emit_ts  = 6;
+  uint64 sequence_engine_key = 7;
+  VisualizationStage visualization_stage = 8 [(buf.validate.field).enum.defined_only = true];
+  Intent intent_classification = 9 [(buf.validate.field).enum.defined_only = true];
+  string vendor_email   = 10 [(buf.validate.field).string.email = true];
+  string mdm_vendor_id  = 11 [(buf.validate.field).string.min_len = 1];
+  string secure_subject_uri = 12 [(buf.validate.field).string.uri = true];
+  string secure_body_uri    = 13 [(buf.validate.field).string.uri = true];
+  repeated Attachment attachments = 14 [(buf.validate.field).repeated.max_items = 25];
+}
+
+message HumanApprovalEvent {
+    string event_id = 1;
+    string trace_parent = 2;
+    uint64 sequence_engine_key = 3;
+    string approved_by = 4;
+}

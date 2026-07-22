@@ -1,0 +1,53 @@
+# ---- Go ----
+# Binaries / build output
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/bin/
+/dist/
+# Go workspace / vendor (we use modules)
+/vendor/
+go.work
+go.work.sum
+
+# ---- Node / Next.js (frontend) ----
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/.turbo/
+frontend/coverage/
+frontend/next-env.d.ts
+frontend/.vercel/
+
+# ---- Env / secrets ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*_credentials.json
+crdb-license.txt
+
+# ---- Docker / local data ----
+**/cockroach-data/
+**/kafka-data/
+docker-compose.override.yml
+
+# ---- Editor / OS ----
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# ---- Antigravity staging cruft (per STATE.md hygiene note) ----
+Architecture base */
+**/Architecture base */
+
+# ---- Generated protobuf note ----
+# NOTE: *.pb.go ARE committed (generated stubs checked in intentionally, per BUILD.md flow).

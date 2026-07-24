@@ -150,7 +150,7 @@ jobs:
           category: gosec-viz
 
       - name: Trivy — dependency + config/CVE scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.29.0
         with:
           scan-type: fs
           scan-ref: .

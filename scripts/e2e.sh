@@ -42,9 +42,16 @@ log "Building + starting the stack"
 docker compose up -d --build
 
 log "Waiting for crdb-init to complete (schema + changefeeds)"
-INIT_CODE="$(docker compose wait crdb-init)"
+# `docker compose wait` adopts the container's exit code as its OWN status, so under `set -e` a
+# non-zero crdb-init aborts here before we can report it. Block for the stop, then read the true
+# exit code with docker inspect (unambiguous) and branch on that.
+docker compose wait crdb-init >/dev/null 2>&1 || true
+INIT_CID="$(docker compose ps -aq crdb-init)"
+INIT_CODE="$(docker inspect -f '{{.State.ExitCode}}' "$INIT_CID" 2>/dev/null || echo unknown)"
+log "crdb-init exit code: ${INIT_CODE}"
 if [ "$INIT_CODE" != "0" ]; then
   fail "crdb-init exited non-zero ($INIT_CODE) — schema/changefeed bootstrap failed"
+  docker compose logs crdb-init || true
   exit 1
 fi
 

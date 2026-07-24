@@ -93,3 +93,7 @@ CREATE CHANGEFEED FOR TABLE commbot_outbox
 "
 
 echo "crdb-init complete."
+# Reaching here under `set -e` means every step (schema + all 3 changefeeds) succeeded. Exit 0
+# explicitly so the container's status can't inherit a stray non-zero from the last command
+# (e.g. a broken-pipe echo) — docker compose wait adopts this code and gates the whole E2E on it.
+exit 0

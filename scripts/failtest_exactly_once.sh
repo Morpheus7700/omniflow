@@ -26,8 +26,13 @@ docker compose up -d --build
 echo "Waiting for CRDB initialization..."
 # crdb-init has restart:no and exits 0 only on full success; wait on its exit code (log-grep is
 # fragile — its completion line is "crdb-init complete.", not "Init complete").
-INIT_CODE="$(docker compose wait crdb-init)"
-[[ "$INIT_CODE" == "0" ]] || { echo "crdb-init failed (exit $INIT_CODE)"; exit 1; }
+# docker compose wait adopts the container's exit code as its own → set -e would abort before we
+# can report it. Block, then read the true code via docker inspect.
+docker compose wait crdb-init >/dev/null 2>&1 || true
+INIT_CID="$(docker compose ps -aq crdb-init)"
+INIT_CODE="$(docker inspect -f '{{.State.ExitCode}}' "$INIT_CID" 2>/dev/null || echo unknown)"
+echo "crdb-init exit code: ${INIT_CODE}"
+[[ "$INIT_CODE" == "0" ]] || { echo "crdb-init failed (exit $INIT_CODE)"; docker compose logs crdb-init || true; exit 1; }
 
 sleep 5 # Allow seeders and orchestrator to become fully healthy
 

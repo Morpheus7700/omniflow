@@ -152,6 +152,19 @@ The same script runs unchanged in GitHub Actions. If you ever run against a mult
 the stack picks them up automatically; a free Enterprise license is available for individuals and
 companies under $10M revenue at <https://www.cockroachlabs.com/get-cockroachdb/enterprise/>.
 
+### Cloud Deployments (CockroachDB Serverless & Cloud Run)
+
+To deploy to GCP Cloud Run and use CockroachDB Serverless (which offers a generous free tier of 5 GiB storage and 50M RUs/month), inject the connection string as `DATABASE_URL` (and `CRDB_DSN`) into your environment or CI pipeline:
+
+```bash
+export CRDB_LICENSE="your-enterprise-license-for-changefeeds"
+export CRDB_ORG="Your Organization"
+export DATABASE_URL="postgresql://user:pass@your-serverless-host:26257/omniflow"
+export CRDB_DSN="${DATABASE_URL}"
+```
+Our setup scripts and services gracefully handle remote connections instead of assuming `localhost`.
+
+
 ---
 
 ## Repository layout

@@ -7,6 +7,9 @@
 #   CRDB_LICENSE  (required)   free tier: https://www.cockroachlabs.com/get-cockroachdb/enterprise/
 #   CRDB_ORG      (required)
 #
+# To test against a remote CockroachDB Serverless instance instead of the local container:
+#   CRDB_DSN      (optional)   e.g. "postgresql://user:pass@serverless-host:26257/omniflow"
+#
 # Exit 0 == the golden path ran for real end to end.
 set -euo pipefail
 

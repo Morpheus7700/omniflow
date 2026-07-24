@@ -82,6 +82,14 @@ stayed byte-for-byte. This is the ONLY sanctioned deviation from [[03-locked-con
   This is an ephemeral CI stack (`down -v` each run; the killed-pod test restarts the orchestrator, not
   Kafka) so persistence isn't needed. Removed the `kafka-data` volume entirely. Fixed 2026-07-24.
 
+- **Single-broker cluster needs RF=1 on internal topics.** `__consumer_offsets` (and the
+  transaction-state log) default to replication factor 3 and can't be created on one broker, so
+  consumer groups get `COORDINATOR_NOT_AVAILABLE` and NO service ever consumes — the seed then times
+  out with "workflow never suspended" even though the changefeed produced fine. Set
+  `KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1`, `KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1`,
+  `KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1` (+ `KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0` to skip the 3s
+  rebalance wait). Symptom is in the *consumer* log, not Kafka's. Fixed 2026-07-24.
+
 ## Kafka image
 - **Use the JVM image `apache/kafka:3.8.0`, NOT `apache/kafka-native`.** The native (GraalVM) image
   ships no JRE, so the `kafka-broker-api-versions.sh` healthcheck (a Java-launching shell script) can't

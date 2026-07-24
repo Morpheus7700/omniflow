@@ -31,6 +31,14 @@ services:
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:29093
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # Single-broker cluster: the internal __consumer_offsets / transaction-state topics default to
+      # replication factor 3 and CANNOT be created on one broker, so consumer groups fail to find a
+      # coordinator ("COORDINATOR_NOT_AVAILABLE") and no service ever consumes. Force RF=1.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      # Form the consumer group immediately instead of waiting the default 3s rebalance window.
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       CLUSTER_ID: "omniflow-cluster-id-1234"
     # No named volume for /tmp/kafka-logs: an empty root-owned volume clobbers the image's
     # correctly-owned log dir and Kafka (non-root) fails to format storage —

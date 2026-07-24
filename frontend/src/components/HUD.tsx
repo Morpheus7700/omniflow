@@ -33,55 +33,55 @@ export function HUD({ onReplay }: HUDProps) {
   const liveEventsFeed = [...visibleEvents].reverse().slice(0, 5);
 
   return (
-    <div className="absolute inset-0 pointer-events-none p-6 flex justify-between z-10">
+    <div className="w-full h-full flex gap-6 z-10 pointer-events-auto">
       
       {/* Left Panel - Metrics & Controls */}
       <motion.div 
-        initial={{ x: -50, opacity: 0 }}
+        initial={{ x: -20, opacity: 0 }}
         animate={{ x: 0, opacity: 1 }}
         transition={{ type: 'spring', stiffness: 100, damping: 20 }}
-        className="w-96 flex flex-col gap-6 h-full pointer-events-auto"
+        className="w-80 flex flex-col gap-6 h-full"
       >
         {/* Header */}
-        <div className="flex items-center gap-3 pb-4 border-b border-white/10">
-          <div className="w-8 h-8 rounded bg-zinc-800 flex items-center justify-center border border-white/5 shadow-inner">
-            <Activity className="w-4 h-4 text-zinc-300" />
+        <div className="flex items-center gap-3 pb-4 border-b border-white/10 shrink-0">
+          <div className="w-8 h-8 rounded bg-[#0a0e1a] flex items-center justify-center border border-white/5 shadow-inner">
+            <Activity className="w-4 h-4 text-cyan-400" />
           </div>
           <div>
-            <h1 className="text-sm font-semibold tracking-widest text-zinc-100 uppercase">OmniFlow</h1>
-            <p className="text-xs text-zinc-500 font-mono tracking-tight">ORCHESTRATOR HUD v2</p>
+            <h1 className="text-sm font-semibold tracking-widest text-zinc-100 uppercase">System Status</h1>
+            <p className="text-xs text-cyan-500/70 font-mono tracking-tight">ORCHESTRATOR LIVE</p>
           </div>
         </div>
 
         {/* Global Metrics */}
-        <div className="flex flex-col gap-3">
+        <div className="flex flex-col gap-3 shrink-0">
           <MetricCard 
             title="SYSTEM WATERMARK" 
             value={watermark.toString()} 
-            icon={<Clock className="w-4 h-4 text-zinc-400" />} 
+            icon={<Clock className="w-4 h-4 text-cyan-500/50" />} 
           />
           <MetricCard 
             title="TOTAL VALUE PROCESSED" 
             value={`$${totalValue.toLocaleString(undefined, {minimumFractionDigits: 2})}`} 
-            icon={<Database className="w-4 h-4 text-zinc-400" />} 
-            highlight="text-zinc-100"
+            icon={<Database className="w-4 h-4 text-cyan-500/50" />} 
+            highlight="text-cyan-400"
           />
           <MetricCard 
             title="SLA BREACHES / FAILURES" 
             value={totalBreaches.toString()} 
             icon={<AlertTriangle className="w-4 h-4 text-zinc-400" />} 
-            highlight={totalBreaches > 0 ? "text-red-400" : "text-zinc-400"}
+            highlight={totalBreaches > 0 ? "text-amber-400" : "text-zinc-400"}
           />
         </div>
 
         {/* Scrub Controls */}
-        <div className="mt-auto bg-[#09090b]/80 backdrop-blur-md border border-white/10 p-5 rounded-lg flex flex-col gap-4 shadow-2xl">
+        <div className="mt-auto bg-[#0a0e1a]/80 backdrop-blur-md border border-white/5 p-5 rounded-lg flex flex-col gap-4 shadow-xl shrink-0">
           <div className="flex items-center justify-between">
             <h2 className="text-xs font-semibold tracking-wider text-zinc-400 uppercase">Temporal Controls</h2>
             {isReplaying ? (
               <span className="text-[10px] bg-amber-900/30 text-amber-400 border border-amber-500/20 px-2 py-0.5 rounded animate-pulse">REPLAY MODE</span>
             ) : (
-              <span className="text-[10px] bg-green-900/30 text-green-400 border border-green-500/20 px-2 py-0.5 rounded">LIVE STREAM</span>
+              <span className="text-[10px] bg-cyan-900/30 text-cyan-400 border border-cyan-500/20 px-2 py-0.5 rounded">LIVE STREAM</span>
             )}
           </div>
           
@@ -92,7 +92,7 @@ export function HUD({ onReplay }: HUDProps) {
                 type="text" 
                 value={replayStart} 
                 onChange={e => setReplayStart(e.target.value)}
-                className="bg-zinc-900/80 border border-white/10 rounded px-3 py-1.5 text-zinc-200 font-mono text-xs focus:outline-none focus:border-zinc-500 transition-colors"
+                className="bg-[#060a10]/80 border border-white/5 rounded px-3 py-1.5 text-zinc-200 font-mono text-xs focus:outline-none focus:border-cyan-500/50 transition-colors"
               />
             </div>
             <div className="flex flex-col gap-1.5">
@@ -101,7 +101,7 @@ export function HUD({ onReplay }: HUDProps) {
                 type="text" 
                 value={replayEnd} 
                 onChange={e => setReplayEnd(e.target.value)}
-                className="bg-zinc-900/80 border border-white/10 rounded px-3 py-1.5 text-zinc-200 font-mono text-xs focus:outline-none focus:border-zinc-500 transition-colors"
+                className="bg-[#060a10]/80 border border-white/5 rounded px-3 py-1.5 text-zinc-200 font-mono text-xs focus:outline-none focus:border-cyan-500/50 transition-colors"
               />
             </div>
           </div>
@@ -109,14 +109,14 @@ export function HUD({ onReplay }: HUDProps) {
           <div className="flex gap-2 mt-2">
             <button 
               onClick={handleReplayClick}
-              className="flex-1 flex items-center justify-center gap-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-semibold px-4 py-2 rounded transition-colors border border-white/5"
+              className="flex-1 flex items-center justify-center gap-2 bg-[#060a10] hover:bg-zinc-800 text-zinc-300 text-xs font-semibold px-4 py-2 rounded transition-colors border border-white/5"
             >
               <FastForward className="w-3.5 h-3.5" />
               Scrub
             </button>
             <button 
               onClick={handleGoLiveClick}
-              className="flex-1 flex items-center justify-center gap-2 bg-zinc-200 hover:bg-white text-zinc-900 text-xs font-semibold px-4 py-2 rounded transition-colors shadow-sm"
+              className="flex-1 flex items-center justify-center gap-2 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 text-cyan-400 text-xs font-semibold px-4 py-2 rounded transition-colors shadow-sm"
             >
               <Play className="w-3.5 h-3.5" />
               Live
@@ -125,17 +125,20 @@ export function HUD({ onReplay }: HUDProps) {
         </div>
       </motion.div>
 
-      {/* Right Panel - Live Event Feed */}
+      {/* Center/Right Panel - Event Ledger (Takes remaining space) */}
       <motion.div 
-        initial={{ x: 50, opacity: 0 }}
-        animate={{ x: 0, opacity: 1 }}
+        initial={{ y: 20, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
         transition={{ type: 'spring', stiffness: 100, damping: 20, delay: 0.1 }}
-        className="w-80 flex flex-col h-full pointer-events-auto"
+        className="flex-1 flex flex-col h-full"
       >
-        <div className="bg-[#09090b]/80 backdrop-blur-md border border-white/10 rounded-lg p-5 flex flex-col h-[500px] overflow-hidden shadow-2xl mt-auto mb-[22px]">
-          <div className="flex items-center gap-2 pb-4 border-b border-white/5 mb-4 shrink-0">
-            <Server className="w-4 h-4 text-zinc-400" />
-            <h2 className="text-xs font-semibold tracking-wider text-zinc-300 uppercase">Event Ledger</h2>
+        <div className="bg-[#0a0e1a]/80 backdrop-blur-md border border-white/5 rounded-lg p-6 flex flex-col h-full shadow-xl">
+          <div className="flex items-center justify-between pb-4 border-b border-white/5 mb-4 shrink-0">
+             <div className="flex items-center gap-2">
+                <Server className="w-4 h-4 text-cyan-500/50" />
+                <h2 className="text-xs font-semibold tracking-wider text-zinc-300 uppercase">Event Ledger</h2>
+             </div>
+             <div className="text-[10px] font-mono text-zinc-500">SHOWING LAST 5 EVENTS</div>
           </div>
           
           <div className="flex flex-col gap-3 flex-1 overflow-y-auto pr-2 custom-scrollbar relative">
@@ -143,37 +146,39 @@ export function HUD({ onReplay }: HUDProps) {
               {liveEventsFeed.map((event) => (
                 <motion.div
                   key={event.sequence_engine_key}
-                  initial={{ opacity: 0, y: -20, scale: 0.95 }}
+                  initial={{ opacity: 0, y: -20, scale: 0.98 }}
                   animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.9, transition: { duration: 0.1 } }}
+                  exit={{ opacity: 0, scale: 0.95, transition: { duration: 0.1 } }}
                   layout
-                  className="bg-zinc-900/60 border border-white/5 p-3 rounded text-xs flex flex-col gap-2 shrink-0"
+                  className="bg-[#060a10]/60 border border-white/5 p-4 rounded-lg text-xs flex flex-col gap-3 shrink-0 group hover:border-cyan-500/30 transition-colors"
                 >
-                  <div className="flex justify-between items-center border-b border-white/5 pb-2">
-                    <span className="font-mono text-[10px] text-zinc-500">{event.sequence_engine_key}</span>
-                    <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider ${
-                      event.status === 'COMPLETED' ? 'bg-green-900/30 text-green-400 border border-green-500/20' :
-                      event.status === 'FAILURE' ? 'bg-red-900/30 text-red-400 border border-red-500/20' :
+                  <div className="flex justify-between items-center border-b border-white/5 pb-3">
+                    <span className="font-mono text-[11px] text-cyan-400/50 group-hover:text-cyan-400/80 transition-colors">{event.sequence_engine_key}</span>
+                    <span className={`text-[9px] px-2 py-1 rounded font-bold uppercase tracking-widest ${
+                      event.status === 'COMPLETED' ? 'bg-cyan-900/30 text-cyan-400 border border-cyan-500/30' :
+                      event.status === 'FAILURE' ? 'bg-amber-900/30 text-amber-400 border border-amber-500/30' :
                       'bg-zinc-800 text-zinc-300 border border-white/5'
                     }`}>
                       {event.status || 'PROCESSED'}
                     </span>
                   </div>
-                  <div className="text-zinc-200 font-medium truncate">
-                    {event.stage || 'System Event'}
+                  <div className="flex items-center justify-between">
+                     <div className="text-zinc-200 font-medium text-sm">
+                       {event.stage || 'System Event'}
+                     </div>
+                     {event.metrics?.value != null && (
+                       <div className="text-cyan-400 font-mono text-xs bg-cyan-950/30 px-2 py-1 rounded border border-cyan-900/50">
+                         ${event.metrics.value.toLocaleString(undefined, {minimumFractionDigits: 2})}
+                       </div>
+                     )}
                   </div>
-                  {event.metrics?.value != null && (
-                    <div className="text-zinc-500 font-mono text-[10px]">
-                      Value: ${event.metrics.value.toLocaleString(undefined, {minimumFractionDigits: 2})}
-                    </div>
-                  )}
                 </motion.div>
               ))}
             </AnimatePresence>
             
             {liveEventsFeed.length === 0 && (
               <div className="absolute inset-0 flex items-center justify-center text-zinc-600 text-xs font-mono uppercase tracking-widest">
-                Awaiting events...
+                Awaiting event stream...
               </div>
             )}
           </div>

@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -60,7 +60,22 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 4. Start processing
+	// 4. Start Healthcheck Server
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
+	srv := &http.Server{Addr: ":8080", Handler: mux}
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("healthcheck server failed", "error", err)
+		}
+	}()
+
+	// 5. Start processing
 	slog.Info("starting inventory-intelligence service")
 	consumer.Start(ctx)
+
+	srv.Shutdown(context.Background())
 }

@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -81,8 +81,26 @@ func run() error {
 		return err
 	}
 
+	// ── Healthcheck Server (Cloud Run) ───────────────────────────────────────
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
+	srv := &http.Server{Addr: ":8080", Handler: mux}
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("healthcheck server failed", "error", err)
+		}
+	}()
+
 	slog.Info("commbot starting", "input_topic", cfg.inputTopic, "bootstrap", cfg.kafkaBootstrap)
 	adapter.Start(ctx) // blocks until ctx is cancelled
+	
+	sctx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer scancel()
+	_ = srv.Shutdown(sctx)
+	
 	slog.Info("commbot stopped cleanly")
 	return nil
 }

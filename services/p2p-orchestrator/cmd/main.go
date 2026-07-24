@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"sync"
@@ -91,12 +91,26 @@ func main() {
 		adapter.Start(ctx)
 	}()
 
+	// 4. Start Healthcheck Server
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
+	srv := &http.Server{Addr: ":8080", Handler: mux}
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("healthcheck server failed", "error", err)
+		}
+	}()
+
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
 
 	slog.Info("Shutting down orchestrator gracefully...")
 	cancel()
+	srv.Shutdown(context.Background())
 
 	wg.Wait()
 }

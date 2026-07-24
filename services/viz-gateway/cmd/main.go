@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"omniflow/services/viz-gateway/internal/api"
 	"omniflow/services/viz-gateway/internal/kafka"
@@ -77,8 +78,9 @@ func main() {
 	mux.Handle("/api/replay", withCORS(http.HandlerFunc(api.NewReplayHandler(repo).HandleReplay)))
 
 	server := &http.Server{
-		Addr:    ":8080",
-		Handler: mux,
+		Addr:              ":8080",
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
 	}
 
 	go func() {

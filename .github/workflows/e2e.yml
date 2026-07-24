@@ -152,8 +152,11 @@ jobs:
       # Direct Trivy install + CLI, not aquasecurity/trivy-action — that composite action
       # transitively pins a setup-trivy tag that keeps breaking (v0.29.0 → setup-trivy@v0.2.2
       # is unresolvable). Installing the binary directly removes all transitive action-tag risk.
+      # Installer script AND binary both pinned to an immutable release tag (not `main`) —
+      # closes the unpinned-remote-code-execution surface flagged in review. Bump the tag to
+      # upgrade, same as the @vN action pins elsewhere in this workflow.
       - name: Install Trivy
-        run: curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+        run: curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/v0.72.0/contrib/install.sh | sh -s -- -b /usr/local/bin v0.72.0
       - name: Trivy — dependency + config/CVE scan
         run: |
           trivy fs . \

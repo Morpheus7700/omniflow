@@ -63,6 +63,18 @@ stayed byte-for-byte. This is the ONLY sanctioned deviation from [[03-locked-con
   `context: ./frontend`. (Only a real CI `docker compose build` reveals this — local `go build ./...`
   passes because it respects module boundaries; Docker's `COPY . .` does not.) Fixed 2026-07-24.
 
+## Kafka KRaft config (crash-on-boot, exit 1 in ~1.5s)
+- **Multiple broker-facing listeners with the same protocol REQUIRE `KAFKA_INTER_BROKER_LISTENER_NAME`.**
+  Our compose has `PLAINTEXT` (host, `localhost:9092`) + `INTERNAL` (in-network, `kafka:29092`), both
+  PLAINTEXT-protocol. Without naming the inter-broker listener Kafka can't disambiguate and exits(1)
+  before the healthcheck ever runs — so the failure looks like `dependency failed to start: kafka
+  exited (1)`, NOT a hang. Set `KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL` (every service + changefeed
+  sink connects to `kafka:29092`). Fixed 2026-07-24, first real CI boot.
+- **Failtest scripts must dump `docker compose logs` to STDOUT on failure, not to a file.** The 3
+  failtests wrote `docker compose logs > X.log` (invisible in CI) → a boot crash was completely opaque.
+  Now they mirror `e2e.sh`: `local code=$?` in the trap, and on non-zero dump `docker compose logs
+  --no-color --tail=200` to stdout. Without this you're blind to any container that dies during boot.
+
 ## Kafka image
 - **Use the JVM image `apache/kafka:3.8.0`, NOT `apache/kafka-native`.** The native (GraalVM) image
   ships no JRE, so the `kafka-broker-api-versions.sh` healthcheck (a Java-launching shell script) can't

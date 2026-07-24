@@ -10,9 +10,14 @@ export COMPOSE_PROJECT_NAME="omniflow-failtest-pod"
 SSE_PID=""  # so the EXIT trap is safe under set -u even if we fail before opening the SSE stream
 
 cleanup() {
-    echo "Tearing down..."
+    local code=$?
     [[ -n "$SSE_PID" ]] && kill "$SSE_PID" 2>/dev/null || true
-    docker compose logs > pod-failtest.log || true
+    if [[ "$code" -ne 0 ]]; then
+        echo "===== failtest failed (exit $code) — docker compose logs ====="
+        docker compose logs --no-color --tail=200 || true
+        echo "===== end docker compose logs ====="
+    fi
+    echo "Tearing down..."
     docker compose down -v
 }
 trap cleanup EXIT

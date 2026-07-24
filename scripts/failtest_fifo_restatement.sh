@@ -9,8 +9,13 @@ cd "$(dirname "$0")/.."
 export COMPOSE_PROJECT_NAME="omniflow-failtest-fifo"
 
 cleanup() {
+    local code=$?
+    if [[ "$code" -ne 0 ]]; then
+        echo "===== failtest failed (exit $code) — docker compose logs ====="
+        docker compose logs --no-color --tail=200 || true
+        echo "===== end docker compose logs ====="
+    fi
     echo "Tearing down..."
-    docker compose logs > fifo-restatement-failtest.log || true
     docker compose down -v
 }
 trap cleanup EXIT

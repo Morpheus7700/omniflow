@@ -67,10 +67,11 @@ CREATE CHANGEFEED FOR TABLE fact_inventory_movement, fact_inventory_snapshot
 create_changefeed "orchestrator_outbox" "omniflow.p2p.completed.v1" "
 CREATE CHANGEFEED FOR TABLE orchestrator_outbox
   INTO 'kafka://kafka:29092?topic_name=omniflow.p2p.completed.v1&tls_enabled=false'
+  -- key_column + unordered dropped: CRDB rejects `unordered` together with `resolved`, and the
+  -- viz rendering gate depends on the resolved watermark, so resolved wins. Custom keying is moot on
+  -- this single-broker/single-partition dev Kafka (ordering is preserved regardless of message key).
   WITH
     format                   = 'json',
-    key_column               = 'aggregate_id',
-    unordered,
     updated,
     mvcc_timestamp,
     resolved                 = '1s',
@@ -81,10 +82,9 @@ CREATE CHANGEFEED FOR TABLE orchestrator_outbox
 create_changefeed "commbot_outbox" "omniflow.orchestration.v1" "
 CREATE CHANGEFEED FOR TABLE commbot_outbox
   INTO 'kafka://kafka:29092?topic_name=omniflow.orchestration.v1&tls_enabled=false'
+  -- key_column + unordered dropped (see orchestrator_outbox above): incompatible with resolved.
   WITH
     format                    = 'json',
-    key_column                = 'aggregate_id',
-    unordered,
     updated,
     mvcc_timestamp,
     resolved                  = '1s',

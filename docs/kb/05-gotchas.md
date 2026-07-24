@@ -103,6 +103,13 @@ stayed byte-for-byte. This is the ONLY sanctioned deviation from [[03-locked-con
   `INTO 'kafka://kafka:29092?topic_prefix=omniflow.inventory.&tls_enabled=false' WITH updated, …`.
   Valid `WITH` options here: format, updated, resolved, mvcc_timestamp, key_column, unordered,
   min_checkpoint_frequency, protect_data_from_gc_on_pause. Fixed 2026-07-24.
+- **`unordered` and `resolved` are mutually exclusive**: `ERROR: unordered is not usable with resolved
+  because resolved timestamps cannot be guaranteed to be correct in unordered mode`. `key_column`
+  pulls in `unordered` (custom keying breaks ordering), so `key_column` + `resolved` can't coexist.
+  The viz rendering gate needs the resolved watermark → resolved wins; dropped `key_column`+`unordered`
+  from both outbox changefeeds. Safe because (a) viz reads `aggregate_id` from the value `after{}`, not
+  the Kafka key, and (b) the only `.Key` uses are DLQ pass-through (`routeToDLQ`,
+  `produceToDLQConfirmed`) — no logic keys off it. Single-partition dev Kafka preserves order anyway.
 - **License-free single-node changefeeds CONFIRMED working in CI** — crdb-init logged "No CRDB_LICENSE
   — proceeding license-free" and created the DB + schema with no license error. The pivot holds; the
   only changefeed failure was the `topic_prefix` placement above, not licensing.

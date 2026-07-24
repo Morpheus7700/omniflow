@@ -34,10 +34,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if [ -z "${CRDB_LICENSE:-}" ]; then
-  fail "CRDB_LICENSE is not set — CockroachDB gates Kafka-sink changefeeds behind an Enterprise license."
-  exit 78  # EX_CONFIG: skip cleanly rather than report a false failure
-fi
+# CRDB_LICENSE is OPTIONAL: a single-node CockroachDB v24.3+ cluster runs changefeeds license-free.
+# If a key is set it flows through to crdb-init; if not, we still run and let crdb-init's changefeed
+# creation be the real test. No silent skip — a licensing failure surfaces as a hard non-zero exit.
 
 log "Building + starting the stack"
 docker compose up -d --build

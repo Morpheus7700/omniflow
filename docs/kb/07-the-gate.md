@@ -1,28 +1,31 @@
 # 07 · The Gate (current critical path)
 
-Everything in [[04-progress-ledger]] is committed (`d351b96`) but **unproven** — no CI has run. The
-one thing standing between "built" and "proven" is three **human-only** steps. Neither Claude nor
-Antigravity can do them (captcha, personal GitHub auth, license signup).
+Everything in [[04-progress-ledger]] is committed but **unproven** — no CI has run. As of 2026-07-24
+the only remaining blocker is **GitHub auth + push** (one human step). The CockroachDB license is **no
+longer required** (see below).
 
-## Why blocked (verified 2026-07-23)
-- **No git remote** — the repo has never been connected to GitHub.
-- **`gh` CLI not installed** on this machine, no auth.
-- **`CRDB_LICENSE` is human-gated** — free signup at cockroachlabs.com; only the human can set repo
-  secrets.
+## Status (2026-07-24)
+- **`gh` CLI installed** (v2.96.0, on Machine PATH). Only `gh auth login` remains — interactive, so a
+  human runs it once (authenticates gh for the whole Windows user, incl. Antigravity's terminal).
+- **No git remote yet** — repo has never been connected to GitHub.
+- **`CRDB_LICENSE` is now OPTIONAL.** Under CockroachDB v24.3+ licensing a single-node cluster
+  (`start-single-node`, which is what compose runs) needs no license key. crdb-init + the scripts + CI
+  were re-plumbed to run license-free and **fail loudly** (never skip) if changefeed creation actually
+  needs a key. So the license signup is dropped unless CI proves otherwise.
 
-## The exact steps (human runs these; `!` prefix runs in-session)
+## The exact steps (human auths; then Claude or Antigravity can push)
 ```bash
-# 1. Free CockroachDB Enterprise license (browser): copy the license string + org
-#    https://www.cockroachlabs.com/get-cockroachdb/enterprise/
-
-# 2. Auth + create repo + push:
+# 1. Auth (human, one-time, interactive browser):
 gh auth login
+
+# 2. Create the public repo + push (no secrets needed):
 gh repo create omniflow --public --source=. --remote=origin --push
 #    (no gh? create in browser, then: git remote add origin <url> && git push -u origin master)
 
-# 3. Set CI secrets:
-gh secret set CRDB_LICENSE --body "<license-string>"
-gh secret set CRDB_ORG     --body "<org-name>"
+# 3. (Optional) ONLY if CI shows changefeeds need a license — grab a FREE key and set secrets:
+#    https://www.cockroachlabs.com/get-cockroachdb/enterprise/
+#    gh secret set CRDB_LICENSE --body "<license-string>"
+#    gh secret set CRDB_ORG     --body "<org-name>"
 ```
 
 ## Then

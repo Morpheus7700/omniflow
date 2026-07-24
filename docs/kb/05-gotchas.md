@@ -53,8 +53,18 @@ a `now` timestamp**. Backdating `occurred_at` to match the low seq would silentl
 to the schema lock, populated from the workflow in the exactly-once CTE. The `insert_ledger` guard
 stayed byte-for-byte. This is the ONLY sanctioned deviation from [[03-locked-constraints]].
 
+## Kafka image
+- **Use the JVM image `apache/kafka:3.8.0`, NOT `apache/kafka-native`.** The native (GraalVM) image
+  ships no JRE, so the `kafka-broker-api-versions.sh` healthcheck (a Java-launching shell script) can't
+  run → kafka never reports healthy → `crdb-init` (gated on `kafka: service_healthy`) never starts →
+  every boot job hangs to the CI cap. The JVM image ships the same CLI scripts *with* a JRE. (Fixed
+  2026-07-24; see `docs/audit/GROUNDING_AUDIT_2026-07-24.md` finding #1.)
+
 ## CockroachDB specifics
-- Kafka-sink changefeeds require an **Enterprise license** (free tier). Env `CRDB_LICENSE`/`CRDB_ORG`.
+- **Changefeeds run license-free on a single-node cluster** (`start-single-node`, what compose runs) under
+  v24.3+ licensing. `CRDB_LICENSE`/`CRDB_ORG` are OPTIONAL env, needed only for a *multi-node* cluster.
+  crdb-init + scripts + CI attempt changefeed creation unconditionally and **fail loudly** if a key is
+  ever actually required — they never silently skip. See [[07-the-gate]].
 - crdb-init runs in a *separate* cockroach container (CLI only) → every `cockroach sql` needs
   `--host=cockroachdb:26257`, else it hangs on localhost.
 - `SHOW CHANGEFEED JOBS` has a `description` column, no `statement` column.

@@ -22,7 +22,9 @@
 - `docs/audit/COMPOSE_PLAN_AUDIT.md` — the round-1..3 compose audit trail.
 
 ## One-line status (update every session)
-**As of 2026-07-23:** Prompts 1–6 built + audited + committed (`d351b96` on `master`). Nothing pushed
-yet. Critical path = [[07-the-gate]] (human must push repo + set `CRDB_LICENSE`/`CRDB_ORG`). No CI run
-has happened; all "survives failure" proofs are CI-only. Next build item after green = README/SCOPE.md,
-then the deferred WebSocket upgrade (`docs/antigravity/WEBSOCKET_UPGRADE_SPEC.md`).
+**As of 2026-07-24:** Prompts 1–6 committed (`8b6b7ff` on `master`). **Independent pre-push grounding
+audit done from disk** (`docs/audit/GROUNDING_AUDIT_2026-07-24.md`) → **verdict: safe to push.** Builds
+green, spine byte-for-byte aligned, all 4 proofs assert real invariants. Only first-run unknown = Kafka
+native-image healthcheck (#1), now bounded by `timeout-minutes: 25` on the 4 boot jobs (uncommitted).
+Critical path unchanged = [[07-the-gate]] (human pushes repo + sets `CRDB_LICENSE`/`CRDB_ORG`). No CI
+run yet. Next after green = README/SCOPE.md, then the deferred WebSocket upgrade.

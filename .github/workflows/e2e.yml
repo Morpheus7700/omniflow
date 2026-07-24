@@ -41,6 +41,7 @@ jobs:
     name: boot stack + seed E2E
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 25   # a Kafka-healthcheck / changefeed stall must fail fast+clean, not hang to the 6h cap
     # Skip cleanly when the license secret is absent (e.g. fork PRs).
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     env:
@@ -49,18 +50,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Guard — license present?
-        id: guard
-        run: |
-          if [ -z "${CRDB_LICENSE}" ]; then
-            echo "CRDB_LICENSE secret not set — skipping E2E (build already passed)."
-            echo "run=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          fi
-
       - uses: actions/setup-go@v5
-        if: steps.guard.outputs.run == 'true'
         with:
           go-version: '1.25'
 
@@ -68,14 +58,16 @@ jobs:
       # running changefeeds, connects to the SSE stream BEFORE seeding (the gateway has no backlog),
       # seeds one event through the real changefeed spine + HITL approval, asserts the seeded
       # sequence_engine_key reaches /api/stream, dumps logs on failure, and always tears down.
+      # CRDB_LICENSE is optional (single-node v24.3+ runs changefeeds license-free); passed through
+      # via env if the secret is set, ignored if not. The job runs either way — no skip.
       - name: Run end-to-end proof
-        if: steps.guard.outputs.run == 'true'
         run: bash scripts/e2e.sh
 
   failtest-resume:
     name: test durable checkpoint resume
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 25   # a Kafka-healthcheck / changefeed stall must fail fast+clean, not hang to the 6h cap
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     env:
       CRDB_LICENSE: ${{ secrets.CRDB_LICENSE }}
@@ -83,29 +75,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Guard — license present?
-        id: guard
-        run: |
-          if [ -z "${CRDB_LICENSE}" ]; then
-            echo "CRDB_LICENSE secret not set — skipping failtest."
-            echo "run=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          fi
-
       - uses: actions/setup-go@v5
-        if: steps.guard.outputs.run == 'true'
         with:
           go-version: '1.25'
 
       - name: Run pod survival test
-        if: steps.guard.outputs.run == 'true'
         run: bash scripts/failtest_killed_pod.sh
 
   failtest-exactly-once:
     name: test exactly-once delivery suppression
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 25   # a Kafka-healthcheck / changefeed stall must fail fast+clean, not hang to the 6h cap
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     env:
       CRDB_LICENSE: ${{ secrets.CRDB_LICENSE }}
@@ -113,29 +94,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Guard — license present?
-        id: guard
-        run: |
-          if [ -z "${CRDB_LICENSE}" ]; then
-            echo "CRDB_LICENSE secret not set — skipping failtest."
-            echo "run=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          fi
-
       - uses: actions/setup-go@v5
-        if: steps.guard.outputs.run == 'true'
         with:
           go-version: '1.25'
 
       - name: Run exactly-once test
-        if: steps.guard.outputs.run == 'true'
         run: bash scripts/failtest_exactly_once.sh
 
   failtest-restatement:
     name: test FIFO late-arrival restatement
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 25   # a Kafka-healthcheck / changefeed stall must fail fast+clean, not hang to the 6h cap
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     env:
       CRDB_LICENSE: ${{ secrets.CRDB_LICENSE }}
@@ -143,23 +113,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Guard — license present?
-        id: guard
-        run: |
-          if [ -z "${CRDB_LICENSE}" ]; then
-            echo "CRDB_LICENSE secret not set — skipping failtest."
-            echo "run=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          fi
-
       - uses: actions/setup-go@v5
-        if: steps.guard.outputs.run == 'true'
         with:
           go-version: '1.25'
 
       - name: Run FIFO restatement test
-        if: steps.guard.outputs.run == 'true'
         run: bash scripts/failtest_fifo_restatement.sh
 
   security:

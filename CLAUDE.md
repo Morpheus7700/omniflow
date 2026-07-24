@@ -39,8 +39,10 @@ or fire-and-forget produce.
 ## Build / verify commands
 - Root module:  `CGO_ENABLED=0 go build ./...`  and  `go vet ./...`  (must be exit 0)
 - viz-gateway (separate module, go 1.25):  `cd services/viz-gateway && CGO_ENABLED=0 go build ./...`
-- Stack (CI only):  `docker compose up`  — requires `CRDB_LICENSE` + `CRDB_ORG` env (CockroachDB
-  v24.3+ gates Kafka-sink changefeeds behind an Enterprise license; free tier available).
+- Stack (CI only):  `docker compose up`  — runs license-free (single-node CRDB v24.3+ needs no key,
+  changefeeds included). `CRDB_LICENSE`/`CRDB_ORG` are OPTIONAL env, only for a multi-node cluster;
+  crdb-init + scripts + CI run without them and fail loudly if a key is ever actually required.
+  Kafka image = JVM `apache/kafka:3.8.0` (NOT kafka-native — no JRE for the healthcheck).
 - The Sentinel change-watcher (`scratchpad/omniflow-watch.sh`) polls the tree every 10s and only
   wakes Claude when files actually change — never poll from the model itself.
 

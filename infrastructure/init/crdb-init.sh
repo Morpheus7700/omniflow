@@ -11,15 +11,20 @@ set -eo pipefail
 #     in this image and looped forever).
 CRDB="cockroach sql --insecure --host=cockroachdb:26257"
 
-if [ -z "${CRDB_LICENSE}" ]; then
-    echo "ERROR: CRDB_LICENSE is empty. An Enterprise license is required to create Kafka-sink changefeeds."
-    exit 1
-fi
-
+# License is OPTIONAL. Under CockroachDB v24.3+ licensing, a single-node cluster
+# (`start-single-node`) needs no license key, so changefeeds are attempted regardless. If a key IS
+# supplied (CRDB_LICENSE), we apply it; if not, we proceed license-free. Should changefeed creation
+# below fail with a licensing error, crdb-init exits non-zero and CI fails LOUDLY (never a silent skip)
+# — the signal to add a free CRDB_LICENSE and re-run.
 echo "Setting cluster parameters..."
 $CRDB -e "SET CLUSTER SETTING kv.rangefeed.enabled = true;"
-$CRDB -e "SET CLUSTER SETTING cluster.organization = '${CRDB_ORG}';"
-$CRDB -e "SET CLUSTER SETTING enterprise.license = '${CRDB_LICENSE}';"
+if [ -n "${CRDB_LICENSE:-}" ]; then
+    echo "CRDB_LICENSE supplied — applying enterprise license (org=${CRDB_ORG})."
+    $CRDB -e "SET CLUSTER SETTING cluster.organization = '${CRDB_ORG}';"
+    $CRDB -e "SET CLUSTER SETTING enterprise.license = '${CRDB_LICENSE}';"
+else
+    echo "No CRDB_LICENSE — proceeding license-free (single-node, v24.3+). Changefeed creation is the test."
+fi
 
 echo "Creating omniflow database if not exists..."
 $CRDB -e "CREATE DATABASE IF NOT EXISTS omniflow;"

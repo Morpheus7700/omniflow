@@ -1,0 +1,175 @@
+# OmniFlow
+
+**An autonomous Procure-to-Pay & supply-chain orchestrator built on an event-sourced spine.**
+
+OmniFlow ingests vendor communication, drives a procurement workflow through a durable DAG with a
+human-in-the-loop approval gate, maintains a FIFO / moving-average inventory ledger that survives
+out-of-order events, and streams the whole thing to a 3D timeline in the browser — all over a single
+transactional-outbox → change-data-capture spine, with **no dual writes and no Debezium**.
+
+It is a systems-design portfolio piece, not a CRUD app or an LLM wrapper. The emphasis is on the hard
+parts of distributed systems: exactly-once effects, durable resume, ordering under late arrival, and
+proving those properties actually hold by booting the real stack in CI.
+
+---
+
+## Why it's interesting
+
+- **Transactional outbox + native CDC, no dual-write.** Every service writes its business row and its
+  outbox row in one CockroachDB transaction. A **CockroachDB native JSON changefeed** turns those rows
+  into Kafka events. There is no application code that writes to the DB *and* to Kafka — the changefeed
+  is the only bridge, so a crash can never half-publish.
+- **Durable, resumable workflow.** The P2P orchestrator builds a DAG, topo-sorts it (Kahn), and
+  checkpoints node execution to CRDB. Kill the orchestrator mid-flight and restart it — it resumes from
+  the last durable checkpoint and still completes exactly once.
+- **Human-in-the-loop suspend/resume.** The DAG suspends at the `human_approval` node and writes nothing
+  downstream until an approval event arrives; a duplicate approval is a no-op.
+- **Ordering under late arrival.** Inventory valuation is keyed on a Hybrid Logical Clock
+  (`sequence_engine_key`). A receipt that arrives *after* a later consumption triggers a **FIFO
+  restatement**: the affected SKU is replayed in HLC order and the cost basis is corrected.
+- **Precision-safe end to end.** `sequence_engine_key` is carried as a **STRING** across every hop to
+  avoid JavaScript `float64` precision loss on 64-bit keys; the 3D client orders on the changefeed
+  `resolved` watermark.
+
+---
+
+## Architecture
+
+```
+                    ┌──────────────┐
+  vendor email ───► │   commbot    │──┐  (zero-trust quarantine, SSRF allowlist,
+  (communication.v1)└──────────────┘  │   DoW token bucket, tx outbox)
+                                       │ writes commbot_outbox
+                                       ▼
+                              CockroachDB ── native JSON changefeed ──► Kafka
+                                       │                     (orchestration.v1)
+                                       ▼
+                    ┌──────────────────────────┐
+   approval.v1 ───► │      p2p-orchestrator     │  Kahn topo-sort DAG · durable
+                    │  (DAG · HITL suspend)     │  checkpointer · HITL lease
+                    └──────────────────────────┘
+                                       │ writes orchestrator_outbox (exactly-once CTE)
+                                       ▼
+                              CockroachDB ── changefeed ──► Kafka (p2p.completed.v1)
+                                       │
+  raw movement ──► ┌──────────────────────────┐            │
+ (inventory.       │  inventory-intelligence   │            │
+  movement.v1)     │  single-tx FIFO / moving  │            │
+                   │  avg · HLC restatement    │            │
+                   └──────────────────────────┘            │
+                                       │ writes fact_inventory_* ─ changefeed ─┤
+                                       ▼                                        ▼
+                                                              ┌──────────────────────┐
+                                                              │     viz-gateway      │
+                                                              │  SSE /api/stream     │
+                                                              └──────────────────────┘
+                                                                         │
+                                                              ┌──────────────────────┐
+                                                              │  frontend (Next.js /  │
+                                                              │  React-Three-Fiber)   │
+                                                              └──────────────────────┘
+```
+
+### Services
+
+| Service | Language | Consumes | Produces (via outbox → changefeed) | Owns in CRDB |
+|---|---|---|---|---|
+| **commbot** | Go | `omniflow.communication.v1` | `omniflow.orchestration.v1` | `commbot_outbox` |
+| **p2p-orchestrator** | Go | `omniflow.orchestration.v1`, `omniflow.p2p.approval.v1` | `omniflow.p2p.completed.v1` | `workflows`, `node_execution_ledger`, `orchestrator_outbox` |
+| **inventory-intelligence** | Go | `omniflow.inventory.movement.v1` | `omniflow.inventory.fact_inventory_movement`, `…_snapshot` | `fact_inventory_movement`, `fact_inventory_snapshot` |
+| **viz-gateway** | Go (separate module) | `omniflow.p2p.completed.v1`, `omniflow.inventory.fact_inventory_*` | SSE `/api/stream` | — (read model) |
+| **frontend** | Next.js / R3F | SSE `/api/stream` | 3D timeline | — |
+
+### The event spine
+
+| Topic | Origin | Consumer |
+|---|---|---|
+| `omniflow.communication.v1` | external vendor email (or seeder `email` mode) | commbot |
+| `omniflow.orchestration.v1` | `commbot_outbox` changefeed | p2p-orchestrator |
+| `omniflow.p2p.approval.v1` | HITL approval (seeder / UI) | p2p-orchestrator |
+| `omniflow.p2p.completed.v1` | `orchestrator_outbox` changefeed | viz-gateway |
+| `omniflow.inventory.movement.v1` | external movement ingress (raw protobuf) | inventory-intelligence |
+| `omniflow.inventory.fact_inventory_movement` / `…_snapshot` | inventory fact changefeeds (`topic_prefix=omniflow.inventory.`) | viz-gateway |
+
+---
+
+## Tech stack & decisions (ADRs in brief)
+
+- **CockroachDB v24.3 native JSON changefeeds** for CDC. Not Debezium — the database is the CDC engine.
+  (Kafka-sink changefeeds require a CockroachDB Enterprise license; a free tier exists.)
+- **Kafka (KRaft, single-node)** as the event bus; `apache/kafka-native` for fast boot.
+- **franz-go** as the Kafka client — pure Go, `CGO_ENABLED=0`, static binaries, no `librdkafka`.
+- **Protobuf + `buf.validate`** for contracts; validation at the boundary.
+- **OpenTelemetry** with W3C `traceparent` propagated end to end.
+- **`sequence_engine_key` as STRING** across every hop (HLC key; avoids JS `float64` precision loss).
+- **SSE** for the browser transport (deliberate ADR — a read-only broadcast stream needs nothing more;
+  a WebSocket upgrade is scoped as separate future work).
+- **First-party Next.js dashboard** for BI/analytics over the viz stream (no Power BI / DAX).
+
+---
+
+## Proving it's real
+
+The mandate for this repo is **"Make It Real"** — not "compiles," but *runs end to end and survives
+failure*, proven by booting the actual stack in CI. Every proof below is a GitHub Actions job that
+stands up Kafka + CockroachDB + all services with `docker compose` and asserts an invariant on the
+real wire. There are **no simulated logs.**
+
+| CI job | Script | Invariant proven |
+|---|---|---|
+| `boot stack + seed E2E` | `scripts/e2e.sh` | one seeded procurement event flows through the real changefeed spine + HITL suspend/resume and its `sequence_engine_key` reaches the SSE stream |
+| `test durable checkpoint resume` | `scripts/failtest_killed_pod.sh` | orchestrator killed mid-workflow resumes from its durable checkpoint and completes exactly once |
+| `test exactly-once delivery` | `scripts/failtest_exactly_once.sh` | a duplicate approval produces no extra outbox rows, ledger entries, or workflows |
+| `test FIFO late-arrival restatement` | `scripts/failtest_fifo_restatement.sh` | a receipt arriving after a later consumption restates the SKU's FIFO cost basis in HLC order |
+
+---
+
+## Running it
+
+### Build (no Docker needed)
+
+Two Go modules, both build with the Kafka client compiled statically:
+
+```bash
+# root module (commbot, p2p-orchestrator, inventory-intelligence, tools)
+CGO_ENABLED=0 go build ./... && go vet ./...
+
+# viz-gateway is its own module
+cd services/viz-gateway && CGO_ENABLED=0 go build ./... && go vet ./...
+```
+
+### Boot the full stack (CI, or any Docker host)
+
+No license key required. The stack runs a **single-node** CockroachDB, which under v24.3+ licensing
+needs no key — changefeeds included. Just boot it:
+
+```bash
+bash scripts/e2e.sh    # boots the stack, seeds one event end to end, asserts, tears down
+```
+
+The same script runs unchanged in GitHub Actions. If you ever run against a multi-node cluster (which
+*does* require a license), set `CRDB_LICENSE` / `CRDB_ORG` in the environment (or as repo secrets) and
+the stack picks them up automatically; a free Enterprise license is available for individuals and
+companies under $10M revenue at <https://www.cockroachlabs.com/get-cockroachdb/enterprise/>.
+
+---
+
+## Repository layout
+
+```
+contracts/                 protobuf contracts + generated Go
+services/
+  commbot/                 vendor comms ingest & classification
+  p2p-orchestrator/        DAG workflow engine + HITL
+  inventory-intelligence/  FIFO / moving-avg ledger
+  viz-gateway/             SSE read model (separate Go module)
+frontend/                  Next.js / React-Three-Fiber 3D timeline
+infrastructure/            CRDB schema + crdb-init (changefeed bootstrap)
+tools/                     seed (E2E harness) · mock-llm
+scripts/                   e2e + three failure-survival proofs
+.github/workflows/         CI: build/vet + four boot proofs + security scan
+docs/                      knowledge base (docs/kb), audits, ADR trail
+```
+
+See [`SCOPE.md`](SCOPE.md) for what is and isn't in scope, and `docs/kb/INDEX.md` for the full
+knowledge base.

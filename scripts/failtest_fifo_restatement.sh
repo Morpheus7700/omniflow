@@ -3,10 +3,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-if [[ -z "${CRDB_LICENSE:-}" ]]; then
-    echo "CRDB_LICENSE is unset. Skipping failtest_fifo_restatement."
-    exit 78 # EX_CONFIG
-fi
+# CRDB_LICENSE is OPTIONAL (single-node v24.3+ runs changefeeds license-free). We do NOT skip when it
+# is unset — the stack boots and any real licensing error surfaces as a hard failure, never a silent pass.
 
 export COMPOSE_PROJECT_NAME="omniflow-failtest-fifo"
 

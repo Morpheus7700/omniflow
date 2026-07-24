@@ -12,7 +12,10 @@ services:
       retries: 5
 
   kafka:
-    image: apache/kafka-native:3.8.0
+    # JVM image (not apache/kafka-native): the native GraalVM image ships no JRE, so the healthcheck's
+    # kafka-broker-api-versions.sh (a Java-launching shell script) can't run — kafka would never report
+    # healthy and every boot job would hang. The JVM image ships the same CLI scripts *with* a JRE.
+    image: apache/kafka:3.8.0
     ports:
       - "9092:9092"
     environment:

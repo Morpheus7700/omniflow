@@ -29,13 +29,16 @@ Env-driven. `SEED_MODE` picks the entry seam, `SEED_ACTION` picks the lifecycle.
 - Prints `SEED_EVENT_ID=` + `SEED_SEQUENCE_ENGINE_KEY=` for CI assertions.
 - Connects to host-published ports: Kafka `localhost:9092`, CRDB `localhost:26257`.
 
-## The test scripts (CI only; all guard on `CRDB_LICENSE`, exit 78 if absent)
+## The test scripts (CI only; run license-free — no `CRDB_LICENSE` skip as of 2026-07-24)
 - `scripts/e2e.sh` — golden path → SSE.
 - `scripts/failtest_killed_pod.sh` — durable resume.
 - `scripts/failtest_exactly_once.sh` — duplicate suppression.
 - `scripts/failtest_fifo_restatement.sh` — HLC restatement.
 
-All follow the same shape: `set -euo pipefail` · license guard · `docker compose up -d --build` ·
+`CRDB_LICENSE` is now OPTIONAL: single-node CRDB v24.3+ runs changefeeds license-free, so the scripts
+no longer `exit 78` when it's absent — they boot and fail LOUDLY if a key is genuinely needed (crdb-init
+non-zero). A key, if set, still flows through. All follow the same shape:
+`set -euo pipefail` · `docker compose up -d --build` ·
 `docker compose wait crdb-init` · assert · **open SSE before triggering** (where relevant) · numeric
 SQL assertions via `docker compose exec -T cockroachdb` · teardown trap `docker compose down -v`.
 See [[05-gotchas]] for the traps these encode.

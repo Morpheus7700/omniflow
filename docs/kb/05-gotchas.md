@@ -53,6 +53,16 @@ a `now` timestamp**. Backdating `occurred_at` to match the low seq would silentl
 to the schema lock, populated from the workflow in the exactly-once CTE. The `insert_ledger` guard
 stayed byte-for-byte. This is the ONLY sanctioned deviation from [[03-locked-constraints]].
 
+## Docker build contexts (monorepo, two Go modules)
+- **viz-gateway is its OWN module → compose build `context: services/viz-gateway`, `dockerfile: Dockerfile`.**
+  Its Dockerfile does `COPY go.mod go.sum` + `go build ./cmd` relative to the module. Giving it the
+  repo-root `context: .` (as the root-module services correctly use) makes the build fail with
+  `stat /app/cmd: directory not found` and copies the wrong module's go.mod. The root-module services
+  (commbot, inventory-intelligence, p2p-orchestrator, tools/mock-llm) DO use `context: .` with full
+  `./services/X/cmd` paths — that's the *other* case; don't unify them. `frontend` likewise gets
+  `context: ./frontend`. (Only a real CI `docker compose build` reveals this — local `go build ./...`
+  passes because it respects module boundaries; Docker's `COPY . .` does not.) Fixed 2026-07-24.
+
 ## Kafka image
 - **Use the JVM image `apache/kafka:3.8.0`, NOT `apache/kafka-native`.** The native (GraalVM) image
   ships no JRE, so the `kafka-broker-api-versions.sh` healthcheck (a Java-launching shell script) can't

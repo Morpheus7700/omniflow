@@ -99,8 +99,11 @@ services:
 
   viz-gateway:
     build:
-      context: .
-      dockerfile: services/viz-gateway/Dockerfile
+      # viz-gateway is its OWN Go module — context must be the module dir, not the repo root.
+      # Its Dockerfile does `COPY go.mod go.sum` + `go build ./cmd` relative to that module.
+      # (The root-module services use context: . with ./services/X/cmd paths — different case.)
+      context: services/viz-gateway
+      dockerfile: Dockerfile
     depends_on:
       crdb-init:
         condition: service_completed_successfully

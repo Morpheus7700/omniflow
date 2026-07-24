@@ -58,9 +58,9 @@ create_changefeed() {
 
 create_changefeed "fact_inventory tables" "omniflow.inventory." "
 CREATE CHANGEFEED FOR TABLE fact_inventory_movement, fact_inventory_snapshot
-  INTO 'kafka://kafka:29092?tls_enabled=false'
+  INTO 'kafka://kafka:29092?topic_prefix=omniflow.inventory.&tls_enabled=false'
   WITH updated, resolved='1s', mvcc_timestamp, format='json',
-       topic_prefix='omniflow.inventory.', min_checkpoint_frequency='1s',
+       min_checkpoint_frequency='1s',
        protect_data_from_gc_on_pause;
 "
 

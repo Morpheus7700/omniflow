@@ -97,5 +97,14 @@ stayed byte-for-byte. This is the ONLY sanctioned deviation from [[03-locked-con
 - crdb-init runs in a *separate* cockroach container (CLI only) → every `cockroach sql` needs
   `--host=cockroachdb:26257`, else it hangs on localhost.
 - `SHOW CHANGEFEED JOBS` has a `description` column, no `statement` column.
+- **`topic_prefix` and `topic_name` are sink-URI query params, NOT `WITH` options.** Putting
+  `topic_prefix='…'` in the `WITH (…)` clause fails with `ERROR: invalid option "topic_prefix"` and
+  crdb-init exits 1 (→ every boot job dies at "crdb-init didn't complete successfully"). Correct form:
+  `INTO 'kafka://kafka:29092?topic_prefix=omniflow.inventory.&tls_enabled=false' WITH updated, …`.
+  Valid `WITH` options here: format, updated, resolved, mvcc_timestamp, key_column, unordered,
+  min_checkpoint_frequency, protect_data_from_gc_on_pause. Fixed 2026-07-24.
+- **License-free single-node changefeeds CONFIRMED working in CI** — crdb-init logged "No CRDB_LICENSE
+  — proceeding license-free" and created the DB + schema with no license error. The pivot holds; the
+  only changefeed failure was the `topic_prefix` placement above, not licensing.
 
 Related: [[03-locked-constraints]] · [[06-build-and-test]]

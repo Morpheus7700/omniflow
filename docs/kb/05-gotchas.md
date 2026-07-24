@@ -75,6 +75,13 @@ stayed byte-for-byte. This is the ONLY sanctioned deviation from [[03-locked-con
   Now they mirror `e2e.sh`: `local code=$?` in the trap, and on non-zero dump `docker compose logs
   --no-color --tail=200` to stdout. Without this you're blind to any container that dies during boot.
 
+- **NO named volume on Kafka's log dir (`/tmp/kafka-logs`).** A fresh named volume mounts empty and
+  root-owned; Kafka runs non-root and fails to format storage → `Error while writing meta.properties
+  file /tmp/kafka-logs`, container exits 1 *after* config validation (so it's distinct from the
+  inter-broker crash above). The image's own log dir is already correctly owned — don't clobber it.
+  This is an ephemeral CI stack (`down -v` each run; the killed-pod test restarts the orchestrator, not
+  Kafka) so persistence isn't needed. Removed the `kafka-data` volume entirely. Fixed 2026-07-24.
+
 ## Kafka image
 - **Use the JVM image `apache/kafka:3.8.0`, NOT `apache/kafka-native`.** The native (GraalVM) image
   ships no JRE, so the `kafka-broker-api-versions.sh` healthcheck (a Java-launching shell script) can't

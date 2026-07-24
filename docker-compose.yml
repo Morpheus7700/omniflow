@@ -32,8 +32,10 @@ services:
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       CLUSTER_ID: "omniflow-cluster-id-1234"
-    volumes:
-      - kafka-data:/tmp/kafka-logs
+    # No named volume for /tmp/kafka-logs: an empty root-owned volume clobbers the image's
+    # correctly-owned log dir and Kafka (non-root) fails to format storage —
+    # "Error while writing meta.properties". This is an ephemeral CI test stack (each run ends in
+    # `down -v`; the killed-pod test restarts the orchestrator, not Kafka), so persistence isn't needed.
     healthcheck:
       test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"]
       interval: 5s
@@ -129,6 +131,3 @@ services:
         condition: service_completed_successfully
     ports:
       - "3000:3000"
-
-volumes:
-  kafka-data:

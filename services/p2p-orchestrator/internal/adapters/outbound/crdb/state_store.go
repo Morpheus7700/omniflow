@@ -117,9 +117,16 @@ func (s *Store) SaveCheckpoint(ctx context.Context, tx ports.Transaction, wf *do
 	if nodeID != "" && len(payload) > 0 {
 		_, err := ptx.Exec(ctx, `
 			WITH update_wf AS (
-				UPDATE workflows 
+				UPDATE workflows
 				SET state = $1, current_node_index = $2, owner_pod = $3, lease_expires_at = $4
 				WHERE id = $5
+				-- RETURNING is REQUIRED, not decorative. CockroachDB rejects a CTE that produces no
+				-- columns: 'WITH clause "update_wf" does not return any columns (SQLSTATE 0A000)'.
+				-- PostgreSQL permits it, which is why this read as valid SQL. The value is never
+				-- consumed, and it does not need to be: per CockroachDB's subquery semantics a
+				-- data-modifying statement in a CTE "is always executed to completion, even if the
+				-- surrounding query only uses a subset of the results", so the UPDATE still applies.
+				RETURNING 1
 			),
 			insert_ledger AS (
 				INSERT INTO node_execution_ledger (workflow_id, node_id, attempt)
@@ -135,11 +142,12 @@ func (s *Store) SaveCheckpoint(ctx context.Context, tx ports.Transaction, wf *do
 	} else if nodeID != "" {
 		_, err := ptx.Exec(ctx, `
 			WITH update_wf AS (
-				UPDATE workflows 
+				UPDATE workflows
 				SET state = $1, current_node_index = $2, owner_pod = $3, lease_expires_at = $4
 				WHERE id = $5
+				RETURNING 1 -- required by CockroachDB; see the note on the branch above
 			)
-			INSERT INTO node_execution_ledger (workflow_id, node_id, attempt) 
+			INSERT INTO node_execution_ledger (workflow_id, node_id, attempt)
 			VALUES ($5, $6, $7)
 			ON CONFLICT (workflow_id, node_id, attempt) DO NOTHING
 		`, wf.State, wf.CurrentNodeIndex, podParam, leaseParam, wf.ID, nodeID, attempt)

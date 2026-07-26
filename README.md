@@ -90,14 +90,25 @@ proving those properties actually hold by booting the real stack in CI.
 | `omniflow.p2p.completed.v1` | `orchestrator_outbox` changefeed | viz-gateway |
 | `omniflow.inventory.movement.v1` | external movement ingress (raw protobuf) | inventory-intelligence |
 | `omniflow.inventory.fact_inventory_movement` / `…_snapshot` | inventory fact changefeeds (`topic_prefix=omniflow.inventory.`) | viz-gateway |
+| `…v1.dlq` (communication, orchestration, inventory.movement) | consumer dead-letter routing | operator / triage |
+
+**Topics are created explicitly, never by broker auto-create.** `infrastructure/init/kafka-init.sh`
+provisions all ten topics before any service starts, and `crdb-init` waits for it. This is not
+belt-and-braces: **franz-go does not set `allow_auto_topic_creation` in its Metadata request** unless
+`kgo.AllowAutoTopicCreation()` is passed, so `KAFKA_AUTO_CREATE_TOPICS_ENABLE` on the broker is inert
+for every Go client here. The `.dlq` topics are the reason it matters most — each consumer withholds
+its offset commit until dead-letter delivery is confirmed, so a missing `.dlq` topic would wedge that
+partition permanently on the first poison message.
 
 ---
 
 ## Tech stack & decisions (ADRs in brief)
 
 - **CockroachDB v24.3 native JSON changefeeds** for CDC. Not Debezium — the database is the CDC engine.
-  (Kafka-sink changefeeds require a CockroachDB Enterprise license; a free tier exists.)
-- **Kafka (KRaft, single-node)** as the event bus; `apache/kafka-native` for fast boot.
+  No license key needed: a single-node v24.3+ cluster runs Kafka-sink changefeeds license-free.
+- **Kafka (KRaft, single-node)** as the event bus, on the JVM image `apache/kafka:3.8.0` — deliberately
+  *not* `apache/kafka-native`, whose GraalVM image ships no JRE and so cannot run the shell-script
+  health probe, leaving every boot job hanging.
 - **franz-go** as the Kafka client — pure Go, `CGO_ENABLED=0`, static binaries, no `librdkafka`.
 - **Protobuf + `buf.validate`** for contracts; validation at the boundary.
 - **OpenTelemetry** with W3C `traceparent` propagated end to end.
@@ -111,9 +122,29 @@ proving those properties actually hold by booting the real stack in CI.
 ## Proving it's real
 
 The mandate for this repo is **"Make It Real"** — not "compiles," but *runs end to end and survives
-failure*, proven by booting the actual stack in CI. Every proof below is a GitHub Actions job that
-stands up Kafka + CockroachDB + all services with `docker compose` and asserts an invariant on the
-real wire. There are **no simulated logs.**
+failure*, proven by booting the actual stack in CI. There are **no simulated logs.**
+
+Verification is tiered, fastest first, so a regression is caught at the cheapest level that can see it.
+
+**Tier 1 — unit (no Docker, sub-second, every push).** The domain is strict-hexagonal, so the
+highest-risk logic is exercised through its ports with in-memory fakes:
+
+| Package | What it pins |
+|---|---|
+| `inventory-intelligence/…/domain` | FIFO depletion across cost layers, value-weighted moving average, HLC late-arrival restatement, bounded-lateness horizon, over-consumption as terminal + rollback. Decimals compared numerically, never as strings. |
+| `p2p-orchestrator/…/domain` | Kahn topo-sort determinism across repeated runs over freshly built maps (Go randomizes map iteration, so this is a real assertion), plus cycle detection joining `ErrTerminal` so a cyclic workflow goes straight to the DLQ instead of retrying forever. |
+| `viz-gateway/internal/kafka` | Changefeed decode: the `after{}` envelope must be unwrapped and a top-level payload **dropped** rather than projected empty; `UseNumber` must preserve a 19-digit HLC key that a default JSON decode corrupts. Asserted through a real SSE broker, so the wire format is covered too. |
+| `commbot/…/outbound/llm` | The zero-trust quarantine boundary: allowlist checked *before* DNS, suffix/prefix/userinfo confusion rejected, and an allowlisted host that resolves inward (cloud-metadata `169.254.169.254`, loopback, RFC1918) still refused. |
+
+**Tier 2 — integration (`-tags=integration`, ephemeral real CockroachDB via testcontainers).** Covers
+what a fake cannot honestly assert, because the guarantee *is* the SQL: single-transaction atomicity
+(including that the idempotency marker rolls back — otherwise a failed event could never be retried),
+the exactly-once guard under redelivery, lot ordering by `sequence_engine_key`, and DECIMAL/INT8
+fidelity across the wire. It applies the shipped `infrastructure/crdb_schema.sql` rather than
+duplicating DDL, so the test cannot drift from what deploys.
+
+**Tier 3 — full-stack boot proofs.** Each stands up Kafka + CockroachDB + every service with
+`docker compose` and asserts an invariant on the real wire:
 
 | CI job | Script | Invariant proven |
 |---|---|---|
@@ -122,20 +153,31 @@ real wire. There are **no simulated logs.**
 | `test exactly-once delivery` | `scripts/failtest_exactly_once.sh` | a duplicate approval produces no extra outbox rows, ledger entries, or workflows |
 | `test FIFO late-arrival restatement` | `scripts/failtest_fifo_restatement.sh` | a receipt arriving after a later consumption restates the SKU's FIFO cost basis in HLC order |
 
+The tiers deliberately overlap on the FIFO restatement invariant — Tier 1 proves the arithmetic in
+milliseconds, Tier 2 proves it survives a real DECIMAL/INT8 round trip, Tier 3 proves it survives the
+whole changefeed spine. When it breaks, which tier goes red tells you where.
+
 ---
 
 ## Running it
 
-### Build (no Docker needed)
+### Build and test (no Docker needed)
 
 Two Go modules, both build with the Kafka client compiled statically:
 
 ```bash
 # root module (commbot, p2p-orchestrator, inventory-intelligence, tools)
-CGO_ENABLED=0 go build ./... && go vet ./...
+CGO_ENABLED=0 go build ./... && go vet ./... && go test ./...
 
 # viz-gateway is its own module
-cd services/viz-gateway && CGO_ENABLED=0 go build ./... && go vet ./...
+cd services/viz-gateway && CGO_ENABLED=0 go build ./... && go vet ./... && go test ./...
+```
+
+`go test ./...` runs Tier 1 only — no Docker, no services, sub-second. The integration suite is behind
+a build tag so it cannot slow that path down or require a daemon to be present:
+
+```bash
+go test -tags=integration ./...   # Tier 2: pulls and boots a real CockroachDB per suite
 ```
 
 ### Boot the full stack (CI, or any Docker host)
@@ -157,12 +199,30 @@ companies under $10M revenue at <https://www.cockroachlabs.com/get-cockroachdb/e
 To deploy to GCP Cloud Run and use CockroachDB Serverless (which offers a generous free tier of 5 GiB storage and 50M RUs/month), inject the connection string as `DATABASE_URL` (and `CRDB_DSN`) into your environment or CI pipeline:
 
 ```bash
-export CRDB_LICENSE="your-enterprise-license-for-changefeeds"
-export CRDB_ORG="Your Organization"
-export DATABASE_URL="postgresql://user:pass@your-serverless-host:26257/omniflow"
+export DATABASE_URL="postgresql://<user>:<password>@<your-serverless-host>:26257/omniflow"
 export CRDB_DSN="${DATABASE_URL}"
+
+# Only for a MULTI-node cluster; a single node needs neither of these:
+# export CRDB_LICENSE="…"   CRDB_ORG="…"
 ```
-Our setup scripts and services gracefully handle remote connections instead of assuming `localhost`.
+
+Every service reads its DSN and broker list from the environment, so nothing assumes `localhost`.
+Keep these in your platform's secret store — never in the repo (`.gitignore` covers `.env*`).
+
+### The frontend is a frontend
+
+`frontend/` is presentation-only, and that boundary is deliberate: no API routes, no server actions,
+no Node/filesystem/database imports, no committed data files, and no credentials. Its **only** contact
+with the system is the viz-gateway over SSE plus a replay `GET` — so a compromised browser bundle
+exposes no more than the read-model already broadcasts.
+
+The gateway origin comes from one build argument, `NEXT_PUBLIC_API_BASE` (see
+`frontend/src/lib/config.ts`), defaulting to `http://localhost:8081`. Two things to know:
+
+- **Port 8081, not 8080.** compose maps viz-gateway `8081:8080`; host `8080` is CockroachDB's admin UI.
+- `NEXT_PUBLIC_*` is **inlined at build time and frozen into the image**, so pointing a deployment at a
+  different gateway needs a rebuild, not a restart with new env. That is why it is an `ARG` on the
+  builder stage rather than an `ENV` on the runner.
 
 
 ---
@@ -177,10 +237,10 @@ services/
   inventory-intelligence/  FIFO / moving-avg ledger
   viz-gateway/             SSE read model (separate Go module)
 frontend/                  Next.js / React-Three-Fiber 3D timeline
-infrastructure/            CRDB schema + crdb-init (changefeed bootstrap)
+infrastructure/            CRDB schema · crdb-init (changefeeds) · kafka-init (topics)
 tools/                     seed (E2E harness) · mock-llm
 scripts/                   e2e + three failure-survival proofs
-.github/workflows/         CI: build/vet + four boot proofs + security scan
+.github/workflows/         CI: build/vet/unit · integration · four boot proofs · security scan
 docs/                      knowledge base (docs/kb), audits, ADR trail
 ```
 

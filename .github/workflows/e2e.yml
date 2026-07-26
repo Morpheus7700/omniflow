@@ -4,10 +4,15 @@ name: OmniFlow CI + E2E
 # procurement event flows end-to-end — through the real CRDB→Kafka changefeed spine, the DAG
 # orchestrator's human-in-the-loop suspend/resume, and out to the viz SSE stream. No simulated logs.
 #
-# REQUIRED repo secrets (Settings → Secrets and variables → Actions):
-#   CRDB_LICENSE  — CockroachDB Enterprise (free tier) license key; Kafka-sink changefeeds need it.
+# Test tiers, fastest first: `build` runs unit tests (no services), `integration` runs the tag-gated
+# testcontainers suite against a real CockroachDB, and the four boot jobs run the full stack.
+#
+# OPTIONAL repo secrets (Settings → Secrets and variables → Actions):
+#   CRDB_LICENSE  — CockroachDB Enterprise (free tier) license key. NOT needed here: the stack runs
+#                   single-node v24.3+, which does Kafka-sink changefeeds license-free. Only a
+#                   multi-node cluster would require it.
 #   CRDB_ORG      — the organization string the license was issued to (must match exactly).
-# Without CRDB_LICENSE the e2e job is skipped (build still runs) so forks/PRs don't hard-fail.
+# No job is skipped for a missing license; crdb-init fails loudly if a key ever becomes necessary.
 
 on:
   push:
@@ -20,22 +25,42 @@ permissions:
 
 jobs:
   build:
-    name: build + vet (both modules)
+    name: build + vet + unit tests (both modules)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25'
+      # Unit tests need no Docker and no services — they run on every push in seconds. The
+      # testcontainers suite is excluded here by its `integration` build tag (see the job below).
       - name: root module
         run: |
           CGO_ENABLED=0 go build ./...
           go vet ./...
+          go test ./...
       - name: viz-gateway module
         working-directory: services/viz-gateway
         run: |
           CGO_ENABLED=0 go build ./...
           go vet ./...
+          go test ./...
+
+  integration:
+    name: integration tests (testcontainers + real CRDB)
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15   # container pull + boot should be minutes; a stall must fail fast, not hang
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      # ubuntu-latest runners ship a running Docker daemon, which is all testcontainers needs.
+      # These cover what fakes cannot: single-transaction atomicity, the exactly-once idempotency
+      # guard, lot ordering, and DECIMAL/INT8 fidelity through real SQL.
+      - name: root module
+        run: go test -tags=integration -timeout 15m ./...
 
   e2e:
     name: boot stack + seed E2E

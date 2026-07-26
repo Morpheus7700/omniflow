@@ -50,6 +50,19 @@ services:
       timeout: 5s
       retries: 5
 
+  # Creates every topic before any Go client touches Kafka. Required because franz-go does not
+  # request auto-topic-creation, so KAFKA_AUTO_CREATE_TOPICS_ENABLE above is inert for our services
+  # (it only ever worked for CockroachDB's Java changefeed sink). Full reasoning in the script.
+  kafka-init:
+    image: apache/kafka:3.8.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./infrastructure:/infrastructure:ro
+    entrypoint: ["/bin/bash", "/infrastructure/init/kafka-init.sh"]
+    restart: "no"
+
   crdb-init:
     image: cockroachdb/cockroach:v24.3.3
     depends_on:
@@ -57,6 +70,11 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      # Changefeeds must emit into topics that already exist with our intended partition/RF config,
+      # not ones the sink creates ad hoc. This also transitively orders all five app services after
+      # kafka-init, since each of them already gates on crdb-init.
+      kafka-init:
+        condition: service_completed_successfully
     volumes:
       - ./infrastructure:/infrastructure:ro
     entrypoint: ["/bin/bash", "/infrastructure/init/crdb-init.sh"]
@@ -133,7 +151,9 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_SSE_URL: "http://localhost:8081/api/stream"
+        # Origin only — the client appends /api/stream and /api/replay (see frontend/src/lib/config.ts).
+        # 8081 is viz-gateway on the host (mapped 8081:8080); host 8080 is CockroachDB's admin UI.
+        NEXT_PUBLIC_API_BASE: "http://localhost:8081"
     depends_on:
       crdb-init:
         condition: service_completed_successfully

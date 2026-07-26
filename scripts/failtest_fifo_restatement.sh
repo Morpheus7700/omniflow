@@ -23,6 +23,17 @@ trap cleanup EXIT
 echo "Booting stack..."
 docker compose up -d --build
 
+# kafka-init creates every topic — including omniflow.inventory.movement.v1, which this test's
+# inventory seeds produce to, and the .dlq sinks. franz-go never requests auto-topic-creation, so
+# the broker's KAFKA_AUTO_CREATE_TOPICS_ENABLE does nothing for our Go clients. Check it first:
+# crdb-init gates on kafka-init, so a topic failure would otherwise surface as a confusing
+# crdb-init stall rather than naming itself.
+docker compose wait kafka-init >/dev/null 2>&1 || true
+KINIT_CID="$(docker compose ps -aq kafka-init)"
+KINIT_CODE="$(docker inspect -f '{{.State.ExitCode}}' "$KINIT_CID" 2>/dev/null || echo unknown)"
+echo "kafka-init exit code: ${KINIT_CODE}"
+[[ "$KINIT_CODE" == "0" ]] || { echo "kafka-init failed (exit $KINIT_CODE)"; docker compose logs kafka-init || true; exit 1; }
+
 echo "Waiting for CRDB initialization..."
 timeout 60s bash -c 'until docker compose logs crdb-init | grep -q "crdb-init complete."; do sleep 1; done' || { echo "CRDB init failed"; exit 1; }
 # docker compose wait adopts the container's exit code as its own → set -e would abort before we

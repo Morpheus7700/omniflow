@@ -2,10 +2,11 @@
 # scripts/e2e.sh — the "Make It Real" end-to-end proof. Boots the full stack, drives ONE real event
 # through it, and asserts the seeded sequence_engine_key reaches the viz SSE stream. No simulated logs.
 #
-# Runs in GitHub Actions (see .github/workflows/e2e.yml) or on any host with Docker + Go. It requires
-# an Enterprise license for CockroachDB's Kafka-sink changefeeds:
-#   CRDB_LICENSE  (required)   free tier: https://www.cockroachlabs.com/get-cockroachdb/enterprise/
-#   CRDB_ORG      (required)
+# Runs in GitHub Actions (see .github/workflows/e2e.yml) or on any host with Docker + Go. It needs NO
+# license: a single-node CockroachDB v24.3+ cluster runs Kafka-sink changefeeds license-free.
+#   CRDB_LICENSE  (optional)   only for a multi-node cluster; free tier:
+#                              https://www.cockroachlabs.com/get-cockroachdb/enterprise/
+#   CRDB_ORG      (optional)   accompanies CRDB_LICENSE
 #
 # To test against a remote CockroachDB Serverless instance instead of the local container:
 #   CRDB_DSN      (optional)   e.g. "postgresql://user:pass@serverless-host:26257/omniflow"
@@ -43,6 +44,49 @@ trap cleanup EXIT
 
 log "Building + starting the stack"
 docker compose up -d --build
+
+log "Waiting for kafka-init to complete (topic bootstrap)"
+# Same wait/inspect pattern as crdb-init below: `docker compose wait` adopts the container's exit
+# code as its own, which `set -e` would turn into a silent abort before we can report anything.
+docker compose wait kafka-init >/dev/null 2>&1 || true
+KINIT_CID="$(docker compose ps -aq kafka-init)"
+KINIT_CODE="$(docker inspect -f '{{.State.ExitCode}}' "$KINIT_CID" 2>/dev/null || echo unknown)"
+log "kafka-init exit code: ${KINIT_CODE}"
+if [ "$KINIT_CODE" != "0" ]; then
+  fail "kafka-init exited non-zero ($KINIT_CODE) — topic bootstrap failed"
+  docker compose logs kafka-init || true
+  exit 1
+fi
+
+# Assert the full topology up front. Without this a missing topic resurfaces much later as an opaque
+# "UNKNOWN_TOPIC_OR_PARTITION" mid-seed (the original CI failure) instead of naming what's absent.
+log "Asserting all expected topics exist"
+EXPECTED_TOPICS="omniflow.communication.v1
+omniflow.communication.v1.dlq
+omniflow.orchestration.v1
+omniflow.orchestration.v1.dlq
+omniflow.p2p.approval.v1
+omniflow.p2p.completed.v1
+omniflow.inventory.movement.v1
+omniflow.inventory.movement.v1.dlq
+omniflow.inventory.fact_inventory_movement
+omniflow.inventory.fact_inventory_snapshot"
+
+ACTUAL_TOPICS="$(docker compose exec -T kafka \
+  /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --list | tr -d '\r')"
+
+MISSING=""
+while IFS= read -r t; do
+  [ -z "$t" ] && continue
+  printf '%s\n' "$ACTUAL_TOPICS" | grep -qx "$t" || MISSING="${MISSING} ${t}"
+done <<< "$EXPECTED_TOPICS"
+
+if [ -n "$MISSING" ]; then
+  fail "missing Kafka topics:${MISSING}"
+  echo "actual topics:"; printf '%s\n' "$ACTUAL_TOPICS"
+  exit 1
+fi
+echo "all 10 expected topics present"
 
 log "Waiting for crdb-init to complete (schema + changefeeds)"
 # `docker compose wait` adopts the container's exit code as its OWN status, so under `set -e` a

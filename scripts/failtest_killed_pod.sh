@@ -80,7 +80,15 @@ echo "Approving workflow..."
 SEED_ACTION=approve-only go run ./tools/seed
 
 echo "Waiting for SSE event with sequence key ${SEED_SEQUENCE_ENGINE_KEY}..."
-timeout 20s bash -c 'until grep -q "'"${SEED_SEQUENCE_ENGINE_KEY}"'" sse_out.log; do sleep 1; done'
+# 40s, not 20s: after approval the restarted orchestrator must re-acquire the lease and execute the
+# remaining DAG nodes before the outbox row exists, and CI runners are slow. Also report WHY on
+# failure — a bare `timeout` under `set -e` exits 124 with no message, which is indistinguishable
+# from a crash and cost a debugging round earlier.
+timeout 40s bash -c 'until grep -q "'"${SEED_SEQUENCE_ENGINE_KEY}"'" sse_out.log; do sleep 1; done' || {
+    echo "FAIL: sequence key ${SEED_SEQUENCE_ENGINE_KEY} never reached the SSE stream after resume"
+    echo "---- captured SSE output ----"; cat sse_out.log || true
+    exit 1
+}
 echo "SSE event received!"
 
 kill $SSE_PID || true

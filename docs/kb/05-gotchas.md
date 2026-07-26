@@ -122,4 +122,54 @@ stayed byte-for-byte. This is the ONLY sanctioned deviation from [[03-locked-con
   — proceeding license-free" and created the DB + schema with no license error. The pivot holds; the
   only changefeed failure was the `topic_prefix` placement above, not licensing.
 
+### CockroachDB SQL dialect ≠ PostgreSQL (two bugs, one statement, 2026-07-27)
+Both were in `p2p-orchestrator/.../crdb/state_store.go` `SaveCheckpoint`, both **pre-existing and
+invisible** until the topic fix let the DAG resume far enough to execute that branch. Expect this
+pattern: fixing infra unmasks the next latent layer.
+
+- **A data-modifying CTE MUST return columns.** `WITH update_wf AS (UPDATE … WHERE id = $5)` — legal
+  in PostgreSQL, rejected by CRDB:
+  `ERROR: WITH clause "update_wf" does not return any columns (SQLSTATE 0A000)`.
+  Add `RETURNING 1`. It does **not** need to be consumed: per CRDB's documented subquery semantics a
+  data-modifying statement in a CTE "is always executed to completion, even if the surrounding query
+  only uses a subset of the results", so the UPDATE still applies unreferenced.
+- **A placeholder gets exactly ONE inferred type.** `$5` (= `wf.ID`, a Go `string`) was used against
+  `workflows.id` UUID, `node_execution_ledger.workflow_id` UUID, *and*
+  `orchestrator_outbox.aggregate_id` **STRING** (intentionally — it doubles as the Kafka partition
+  key). Inference latched onto UUID from the first two, then:
+  `ERROR: placeholder $5 already has type uuid, cannot assign string (SQLSTATE 42804)`.
+  Fix = pin the placeholder to the Go type and cast at the divergent sites: `$5::UUID` where UUID is
+  wanted, bare `$5` for the STRING column. Do not "fix" the schema — it is LOCKED.
+- **Both surfaced as `WARN Unknown error, assuming transient for safety` × 5 → DLQ.** `0A000` and
+  `42804` are deterministic (feature-not-supported / type error); retrying cannot help. The classifier
+  defaults unknown errors to transient, so a deterministic SQL bug costs five retries and then looks
+  like a DLQ routing problem. When you see five identical WARNs then "Exhausted retries", read the
+  SQLSTATE — the bug is upstream of the retry logic.
+
+## Kafka topic creation — franz-go does NOT auto-create
+- **`KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"` is INERT for every Go service here.** The broker only
+  creates a topic when the *client* asks in its Metadata request, and franz-go omits that unless you
+  pass `kgo.AllowAutoTopicCreation()`. Nothing in this repo passes it.
+- The tell that isolates it: `omniflow.orchestration.v1` existed while `omniflow.p2p.approval.v1` and
+  `omniflow.inventory.movement.v1` did not — because the first is created by CockroachDB's *Java*
+  changefeed sink, which does request creation, and the others are touched only by franz-go.
+- **The dangerous half is the `.dlq` topics.** Every consumer commits its offset ONLY after DLQ
+  delivery is confirmed (`produceToDLQConfirmed`, `routeToDLQ`), so a missing `.dlq` topic wedges that
+  partition permanently on the first poison message — and every happy-path job stays green while it
+  does. Covered now by `scripts/failtest_dlq_poison.sh`.
+- Fix = `infrastructure/init/kafka-init.sh` creates all 10 topics explicitly (RF=1 single broker;
+  partitions=1 keeps per-key ordering total for the HLC assertions); `crdb-init` gates on it.
+
+## Dev-machine traps (not code bugs — they waste hours)
+- **`jq` is NOT installed in the Git-Bash environment.** Any script or Monitor piping through `jq`
+  silently produces nothing every iteration and looks like "no events yet". Use `gh … --jq` (gh ships
+  jq internally) or `--template`.
+- **Quick Heal real-time scanning throttles the Go build cache into uselessness.** After the
+  testcontainers dependency tree landed (docker/moby/containerd/grpc), a *trivial* single-package
+  `go build` exceeded 120s where it previously took seconds — the AV re-scans thousands of unseen
+  files on every compile. Exclude `%LOCALAPPDATA%\go-build` and `%USERPROFILE%\go\pkg\mod`. Until then
+  verify locally with `gofmt -e -l` (parse-only) and let CI compile — it does both modules in ~17s.
+- Killing a background `go build` leaves zombie `go.exe` entries that `taskkill` reports as
+  "no running instance". They are harmless and are NOT holding cache locks — don't chase them.
+
 Related: [[03-locked-constraints]] · [[06-build-and-test]]

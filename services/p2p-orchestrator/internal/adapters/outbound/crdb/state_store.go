@@ -114,12 +114,23 @@ func (s *Store) SaveCheckpoint(ctx context.Context, tx ports.Transaction, wf *do
 	}
 
 	// H-B fix: Squashing into a single CTE to ensure exactly-once outbox emission
+	//
+	// wf.ID is bound TWICE on purpose — as $5 and again as $11 — because this one statement needs it
+	// as two different SQL types:
+	//   workflows.id, node_execution_ledger.workflow_id  ->  UUID    ($5)
+	//   orchestrator_outbox.aggregate_id                 ->  STRING  ($11; deliberately STRING, it
+	//                                                        doubles as the Kafka partition key)
+	// A placeholder carries exactly ONE type, so a single $5 spanning both is rejected:
+	//   ERROR: placeholder $5 already has type uuid, cannot assign string (SQLSTATE 42804)
+	// Casting does NOT fix this: `$5::UUID` makes CockroachDB infer $5 AS uuid from the cast target,
+	// so the STRING use still collides — that attempt was tried and failed in CI identically. Two
+	// placeholders is the only unambiguous form; do not "simplify" it back to one.
 	if nodeID != "" && len(payload) > 0 {
 		_, err := ptx.Exec(ctx, `
 			WITH update_wf AS (
 				UPDATE workflows
 				SET state = $1, current_node_index = $2, owner_pod = $3, lease_expires_at = $4
-				WHERE id = $5::UUID
+				WHERE id = $5
 				-- RETURNING is REQUIRED, not decorative. CockroachDB rejects a CTE that produces no
 				-- columns: 'WITH clause "update_wf" does not return any columns (SQLSTATE 0A000)'.
 				-- PostgreSQL permits it, which is why this read as valid SQL. The value is never
@@ -130,14 +141,14 @@ func (s *Store) SaveCheckpoint(ctx context.Context, tx ports.Transaction, wf *do
 			),
 			insert_ledger AS (
 				INSERT INTO node_execution_ledger (workflow_id, node_id, attempt)
-				VALUES ($5::UUID, $6, $7)
+				VALUES ($5, $6, $7)
 				ON CONFLICT (workflow_id, node_id, attempt) DO NOTHING
 				RETURNING 1
 			)
 			INSERT INTO orchestrator_outbox (aggregate_id, event_type, trace_parent, payload, sequence_engine_key)
-			SELECT $5, 'NodeTransition', $8, $9, $10   -- STRING here, by design
+			SELECT $11, 'NodeTransition', $8, $9, $10   -- $11, not $5: aggregate_id is STRING
 			WHERE EXISTS (SELECT 1 FROM insert_ledger)
-		`, wf.State, wf.CurrentNodeIndex, podParam, leaseParam, wf.ID, nodeID, attempt, wf.TraceParent, payload, wf.SequenceEngineKey)
+		`, wf.State, wf.CurrentNodeIndex, podParam, leaseParam, wf.ID, nodeID, attempt, wf.TraceParent, payload, wf.SequenceEngineKey, wf.ID)
 		return err
 	} else if nodeID != "" {
 		_, err := ptx.Exec(ctx, `

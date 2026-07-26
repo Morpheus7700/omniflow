@@ -70,7 +70,10 @@ sleep 5
 echo "Checking orchestrator_outbox rows..."
 # orchestrator_outbox.aggregate_id is the workflow UUID (wf.ID), NOT the event_id — resolve it via
 # the workflows row (same subquery the ledger check uses below).
-OUTBOX_COUNT=$(docker compose exec -T cockroachdb cockroach sql --insecure -d omniflow --format=csv -e "SELECT count(*) FROM orchestrator_outbox WHERE aggregate_id = (SELECT id FROM workflows WHERE event_id='${SEED_EVENT_ID}');" | tail -n 1)
+# The `::STRING` cast is required, not cosmetic: aggregate_id is declared STRING (it doubles as the
+# Kafka partition key) while workflows.id is UUID, and CockroachDB will not silently compare the two.
+# The ledger check below needs no cast — node_execution_ledger.workflow_id is itself UUID.
+OUTBOX_COUNT=$(docker compose exec -T cockroachdb cockroach sql --insecure -d omniflow --format=csv -e "SELECT count(*) FROM orchestrator_outbox WHERE aggregate_id = (SELECT id::STRING FROM workflows WHERE event_id='${SEED_EVENT_ID}');" | tail -n 1)
 
 if [[ "$OUTBOX_COUNT" != "2" ]]; then
     echo "Expected exactly 2 rows in outbox (approved + completed), got ${OUTBOX_COUNT}"

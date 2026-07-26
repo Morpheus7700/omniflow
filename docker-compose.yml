@@ -151,7 +151,9 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_SSE_URL: "http://localhost:8081/api/stream"
+        # Origin only — the client appends /api/stream and /api/replay (see frontend/src/lib/config.ts).
+        # 8081 is viz-gateway on the host (mapped 8081:8080); host 8080 is CockroachDB's admin UI.
+        NEXT_PUBLIC_API_BASE: "http://localhost:8081"
     depends_on:
       crdb-init:
         condition: service_completed_successfully

@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { useStore, P2PEvent } from '@/store';
+import { STREAM_URL, replayURL } from '@/lib/config';
 
 export function useEventBuffer(replayFrom: bigint | null = null, replayTo: bigint | null = null) {
   const addEvents = useStore(state => state.addEvents);
@@ -17,7 +18,7 @@ export function useEventBuffer(replayFrom: bigint | null = null, replayTo: bigin
     let snapshotCursor = BigInt(0);
 
     const initStream = async (startCursor: bigint) => {
-      sseSource = new EventSource('http://localhost:8080/api/stream');
+      sseSource = new EventSource(STREAM_URL);
 
       sseSource.addEventListener('movement', (e: MessageEvent) => {
         const data = JSON.parse(e.data) as P2PEvent;
@@ -39,7 +40,7 @@ export function useEventBuffer(replayFrom: bigint | null = null, replayTo: bigin
         setStatus('connected');
         // Fetch historical snapshot up to current moment
         try {
-          const res = await fetch(`http://localhost:8080/api/replay?from_seq=${startCursor}&to_seq=0`);
+          const res = await fetch(replayURL(startCursor, 0));
           const history = (await res.json()) as P2PEvent[];
           
           if (history && history.length > 0) {
@@ -68,7 +69,7 @@ export function useEventBuffer(replayFrom: bigint | null = null, replayTo: bigin
 
     if (replayFrom !== null && replayTo !== null) {
       // Replay mode: Fetch history by range. Do not open SSE unless they rejoin live.
-      fetch(`http://localhost:8080/api/replay?from_seq=${replayFrom}&to_seq=${replayTo}`)
+      fetch(replayURL(replayFrom, replayTo))
         .then(res => res.json())
         .then((history: P2PEvent[]) => {
           if (history && history.length > 0) {
@@ -76,6 +77,10 @@ export function useEventBuffer(replayFrom: bigint | null = null, replayTo: bigin
             setWatermark(BigInt(history[history.length - 1].sequence_engine_key));
           }
           setStatus('replay_finished');
+        })
+        .catch(err => {
+          console.error('Failed to fetch replay history', err);
+          setStatus('error');
         });
     } else {
       initStream(BigInt(0));

@@ -17,6 +17,10 @@ export const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? 'http://localhost:80
 
 export const STREAM_URL = `${API_BASE}/api/stream`;
 
-export function replayURL(fromSeq: bigint | string, toSeq: bigint | string): string {
+/**
+ * Cursors accept number as well as bigint/string: callers legitimately pass the literal 0 to mean
+ * "from the beginning", and HLC keys arrive as bigint. All three stringify identically in the query.
+ */
+export function replayURL(fromSeq: bigint | number | string, toSeq: bigint | number | string): string {
   return `${API_BASE}/api/replay?from_seq=${fromSeq}&to_seq=${toSeq}`;
 }

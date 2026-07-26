@@ -115,7 +115,11 @@ fi
 # Connect the SSE consumer BEFORE seeding. The gateway broadcasts live to connected clients only
 # (no server-side backlog), so a late connect would miss the projection.
 log "Opening SSE stream: $SSE_URL"
-curl -sN --max-time 45 "$SSE_URL" > "$SSE_OUT" &
+# --max-time must comfortably exceed (seed duration + assertion window). The seeder alone may poll up
+# to 60s waiting for the workflow to reach SUSPENDED, so the old 45s ceiling could kill this capture
+# mid-assertion and report "never reached the SSE stream" for a stream that was simply no longer being
+# read. The cleanup trap kills this process regardless, so a generous ceiling costs nothing.
+curl -sN --max-time 180 "$SSE_URL" > "$SSE_OUT" &
 SSE_PID=$!
 sleep 3  # allow the SSE client to register with the broker
 
@@ -134,9 +138,10 @@ if [ -z "$SEQ_KEY" ]; then
 fi
 log "Seeded sequence_engine_key = $SEQ_KEY — waiting for it on the SSE stream"
 
-# The p2p.completed changefeed fires ~1-2s after approval; poll the captured stream for up to 20s.
+# The p2p.completed changefeed fires ~1-2s after approval, but the resumed DAG has several nodes to
+# execute first and CI runners are slow, so allow real margin rather than flaking at the boundary.
 FOUND=0
-for _ in $(seq 1 20); do
+for _ in $(seq 1 40); do
   if grep -q "$SEQ_KEY" "$SSE_OUT"; then FOUND=1; break; fi
   sleep 1
 done

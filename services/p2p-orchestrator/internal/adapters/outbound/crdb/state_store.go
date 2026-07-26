@@ -119,7 +119,7 @@ func (s *Store) SaveCheckpoint(ctx context.Context, tx ports.Transaction, wf *do
 			WITH update_wf AS (
 				UPDATE workflows
 				SET state = $1, current_node_index = $2, owner_pod = $3, lease_expires_at = $4
-				WHERE id = $5
+				WHERE id = $5::UUID
 				-- RETURNING is REQUIRED, not decorative. CockroachDB rejects a CTE that produces no
 				-- columns: 'WITH clause "update_wf" does not return any columns (SQLSTATE 0A000)'.
 				-- PostgreSQL permits it, which is why this read as valid SQL. The value is never
@@ -130,12 +130,12 @@ func (s *Store) SaveCheckpoint(ctx context.Context, tx ports.Transaction, wf *do
 			),
 			insert_ledger AS (
 				INSERT INTO node_execution_ledger (workflow_id, node_id, attempt)
-				VALUES ($5, $6, $7)
+				VALUES ($5::UUID, $6, $7)
 				ON CONFLICT (workflow_id, node_id, attempt) DO NOTHING
 				RETURNING 1
 			)
 			INSERT INTO orchestrator_outbox (aggregate_id, event_type, trace_parent, payload, sequence_engine_key)
-			SELECT $5, 'NodeTransition', $8, $9, $10
+			SELECT $5, 'NodeTransition', $8, $9, $10   -- STRING here, by design
 			WHERE EXISTS (SELECT 1 FROM insert_ledger)
 		`, wf.State, wf.CurrentNodeIndex, podParam, leaseParam, wf.ID, nodeID, attempt, wf.TraceParent, payload, wf.SequenceEngineKey)
 		return err

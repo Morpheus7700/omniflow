@@ -59,13 +59,30 @@ if [[ -z "$SEED_EVENT_ID" || -z "$SEED_SEQUENCE_ENGINE_KEY" ]]; then
     exit 1
 fi
 
-# Wait for completion
-sleep 3
+# Wait for the workflow to actually COMPLETE before duplicating the approval.
+#
+# `sleep 3` was not a wait, it was a guess — and the wrong one. The DAG needs longer than that on a CI
+# runner, so the duplicate approval was arriving mid-flight and the assertion below read a
+# half-finished workflow (1 outbox row instead of 2). Worse, it meant the test never actually
+# exercised what it claims: a duplicate approval arriving AFTER completion. Poll for the terminal
+# state so the duplicate is genuinely a duplicate.
+echo "Waiting for the workflow to reach COMPLETED..."
+timeout 90s bash -c 'until [[ "$(docker compose exec -T cockroachdb cockroach sql --insecure -d omniflow --format=csv -e "SELECT state FROM workflows WHERE event_id='"'"'"'"${SEED_EVENT_ID}"'"'"'"';" | tail -n 1)" == "COMPLETED" ]]; do sleep 2; done' || {
+    STATE=$(docker compose exec -T cockroachdb cockroach sql --insecure -d omniflow --format=csv -e "SELECT state FROM workflows WHERE event_id='${SEED_EVENT_ID}';" | tail -n 1)
+    echo "FAIL: workflow never reached COMPLETED before the duplicate approval (last state: ${STATE})"
+    exit 1
+}
+
+# Record the post-completion baseline, so the duplicate is measured against a settled workflow.
+OUTBOX_BEFORE=$(docker compose exec -T cockroachdb cockroach sql --insecure -d omniflow --format=csv -e "SELECT count(*) FROM orchestrator_outbox WHERE aggregate_id = (SELECT id::STRING FROM workflows WHERE event_id='${SEED_EVENT_ID}');" | tail -n 1)
+echo "Outbox rows before duplicate approval: ${OUTBOX_BEFORE}"
 
 echo "Sending duplicate approval..."
 SEED_ACTION=approve-only go run ./tools/seed
 
-sleep 5
+# Give the orchestrator time to consume and (correctly) suppress the duplicate. If it were going to
+# wrongly re-run the DAG, this is the window in which extra rows would appear.
+sleep 10
 
 echo "Checking orchestrator_outbox rows..."
 # orchestrator_outbox.aggregate_id is the workflow UUID (wf.ID), NOT the event_id — resolve it via
@@ -74,6 +91,16 @@ echo "Checking orchestrator_outbox rows..."
 # Kafka partition key) while workflows.id is UUID, and CockroachDB will not silently compare the two.
 # The ledger check below needs no cast — node_execution_ledger.workflow_id is itself UUID.
 OUTBOX_COUNT=$(docker compose exec -T cockroachdb cockroach sql --insecure -d omniflow --format=csv -e "SELECT count(*) FROM orchestrator_outbox WHERE aggregate_id = (SELECT id::STRING FROM workflows WHERE event_id='${SEED_EVENT_ID}');" | tail -n 1)
+
+# Two assertions, because they fail for different reasons and the distinction is diagnostic:
+#   (a) the duplicate added nothing  -> suppression actually happened
+#   (b) the absolute count is 2      -> the DAG emitted the expected outbox rows (two payload-bearing
+#                                       checkpoints: the approved transition and the final one)
+# Without (a) a passing (b) could still hide a duplicate that replaced rather than added.
+if [[ "$OUTBOX_COUNT" != "$OUTBOX_BEFORE" ]]; then
+    echo "Duplicate approval was NOT suppressed: outbox went from ${OUTBOX_BEFORE} to ${OUTBOX_COUNT} rows"
+    exit 1
+fi
 
 if [[ "$OUTBOX_COUNT" != "2" ]]; then
     echo "Expected exactly 2 rows in outbox (approved + completed), got ${OUTBOX_COUNT}"

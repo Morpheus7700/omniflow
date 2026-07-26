@@ -93,17 +93,24 @@ echo "SSE event received!"
 
 kill $SSE_PID || true
 
+# The SSE event proves the workflow RESUMED, not that it FINISHED. It is emitted by the first
+# payload-bearing checkpoint; the DAG still has nodes to execute before `final_step` lands. Asserting
+# terminal state the instant that event arrives is a race — it read `final_step = 0` and failed while
+# the orchestrator was mid-DAG. Wait for the terminal state explicitly.
+echo "Waiting for the workflow to reach COMPLETED..."
+timeout 90s bash -c 'until [[ "$(docker compose exec -T cockroachdb cockroach sql --insecure -d omniflow --format=csv -e "SELECT state FROM workflows WHERE event_id='"'"'"'"${SEED_EVENT_ID}"'"'"'"';" | tail -n 1)" == "COMPLETED" ]]; do sleep 2; done' || {
+    STATE=$(docker compose exec -T cockroachdb cockroach sql --insecure -d omniflow --format=csv -e "SELECT state FROM workflows WHERE event_id='${SEED_EVENT_ID}';" | tail -n 1)
+    echo "FAIL: workflow never reached COMPLETED after resume (last state: ${STATE})"
+    exit 1
+}
+
+# NOW the exactly-once assertion is meaningful: the killed-and-restarted orchestrator resumed from its
+# durable checkpoint and executed final_step EXACTLY once, not zero times and not twice.
 echo "Checking ledger exactly-once state..."
 LEDGER_COUNT=$(docker compose exec -T cockroachdb cockroach sql --insecure -d omniflow --format=csv -e "SELECT count(*) FROM node_execution_ledger WHERE node_id='final_step' AND workflow_id = (SELECT id FROM workflows WHERE event_id='${SEED_EVENT_ID}');" | tail -n 1)
 
 if [[ "$LEDGER_COUNT" != "1" ]]; then
     echo "Expected 1 completed final_step row in ledger, got ${LEDGER_COUNT}"
-    exit 1
-fi
-
-STATE=$(docker compose exec -T cockroachdb cockroach sql --insecure -d omniflow --format=csv -e "SELECT state FROM workflows WHERE event_id='${SEED_EVENT_ID}';" | tail -n 1)
-if [[ "$STATE" != "COMPLETED" ]]; then
-    echo "Expected workflow state COMPLETED, got ${STATE}"
     exit 1
 fi
 

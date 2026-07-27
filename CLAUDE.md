@@ -17,14 +17,15 @@ note (the recurring bugs); read it before editing scripts, consumers, or schema.
 
 ## Current mandate — "Make It Real"
 Prove the existing core RUNS end-to-end and SURVIVES failure. STOP adding blueprint surface
-(K8s/Istio/Neo4j/Pinecone/ADK/LiteLLM/BigQuery/Power BI). The liability we kill is "compiles but
+(K8s/Istio/Neo4j/Pinecone/ADK/LiteLLM/a separate BI tier). The liability we kill is "compiles but
 never run" — **never accept simulated logs as verification.** The real E2E boot must execute in
 GitHub Actions or Codespaces (no local Docker daemon available on this machine).
 
 ## Locked decisions (do not re-litigate)
 - **CDC = CockroachDB native JSON changefeeds.** No Debezium, ever.
 - **Kafka client = franz-go** (pure Go, no CGO) for all services.
-- **BI/analytics = first-party Next.js web dashboard** over the viz stream. No Power BI/DAX.
+- **Analytics = the same first-party Next.js dashboard** over the viz stream. No separate BI tier, no
+  warehouse hop — the facts are already computed and travel on the changefeed.
 - **Browser transport = SSE** (deliberate ADR). A WebSocket upgrade, if ever, is its own audited prompt.
 - **DB name = `omniflow`** for every service. `sequence_engine_key` is carried as a STRING end-to-end
   (avoids JS float64 precision loss). Rendering gated by the changefeed `resolved` watermark.

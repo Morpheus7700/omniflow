@@ -115,7 +115,10 @@ partition permanently on the first poison message.
 - **`sequence_engine_key` as STRING** across every hop (HLC key; avoids JS `float64` precision loss).
 - **SSE** for the browser transport (deliberate ADR — a read-only broadcast stream needs nothing more;
   a WebSocket upgrade is scoped as separate future work).
-- **First-party Next.js dashboard** for BI/analytics over the viz stream (no Power BI / DAX).
+- **First-party Next.js dashboard** for analytics, reading the same SSE stream the operational view
+  uses. There is no separate BI tier and no warehouse hop: the facts a buyer asks about are already
+  computed in `fact_inventory_*` and arrive over the changefeed, so a second analytics stack would
+  duplicate state and add a staleness window for no gain at this size.
 
 ---
 

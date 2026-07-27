@@ -11,7 +11,7 @@ The five phases were built and audited but **never actually run**. The liability
 "compiles but never run." Every current effort proves the core **boots end-to-end** and **survives
 failure**, in CI (there is **no local Docker daemon** on this machine — see [[06-build-and-test]]).
 
-STOP adding blueprint surface (K8s/Istio/Neo4j/Pinecone/ADK/LiteLLM/BigQuery/Power BI). Depth over
+STOP adding blueprint surface (K8s/Istio/Neo4j/Pinecone/ADK/LiteLLM/a separate BI tier). Depth over
 breadth. See [[04-progress-ledger]] for what's done.
 
 ## What exists (5 phases, all previously audited)
@@ -25,7 +25,7 @@ breadth. See [[04-progress-ledger]] for what's done.
 - **Phase 5 · Real-Time Viz** — SSE gateway + Next.js/R3F 3D flow-graph, HLC-watermark jitter control.
 
 ## Key product decisions (settled — do not re-litigate)
-- **BI/analytics = a first-party Next.js dashboard** over the viz stream. NO Power BI / DAX.
+- **Analytics = the same first-party Next.js dashboard** over the viz stream. No separate BI tier.
 - **CDC = CockroachDB native JSON changefeeds.** NO Debezium, ever.
 - **Kafka client = franz-go** (pure Go, no CGO) everywhere.
 - **Browser transport = SSE** (deliberate ADR). A WebSocket upgrade is its own future audited prompt.

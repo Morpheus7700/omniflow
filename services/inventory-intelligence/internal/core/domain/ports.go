@@ -19,7 +19,8 @@ type EventConsumer interface {
 // InventoryStore manages the strict CRDB transaction (operational state + outbox)
 type InventoryStore interface {
 	// ProcessInventoryTransaction executes the idempotency check, updates the append-only ledger,
-	// restates any affected history, and writes outbox rows to be changefed to BigQuery.
+	// restates any affected history, and writes the fact rows that the inventory changefeed carries
+	// to the viz gateway.
 	// Bounded lateness handles historical recalculations within this single transaction.
 	ProcessInventoryTransaction(ctx context.Context, event InventoryMovementReceived, processFn func(ctx context.Context, e InventoryMovementReceived, ledger LedgerAccess) ([]InventoryFact, error)) error
 }

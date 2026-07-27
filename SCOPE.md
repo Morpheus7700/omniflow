@@ -39,9 +39,13 @@ progress toward it.
 
 - **Kubernetes / Istio / service mesh / mTLS.** The proof target is `docker compose` in CI.
 - **Neo4j / Pinecone / vector or graph stores.** No use case in the proven core.
-- **Cloud data warehouse BI (BigQuery / Power BI / DAX).** Analytics surface through the first-party
-  Next.js dashboard over the viz stream instead. (Legacy `infrastructure/warehouse/*` files are kept
-  for reference only.)
+- **A separate BI tier or data warehouse.** Analytics surface through the first-party Next.js
+  dashboard over the same stream the operational view uses. The facts a buyer asks about are already
+  computed in `fact_inventory_movement` / `fact_inventory_snapshot` and travel on the changefeed, so a
+  warehouse hop would duplicate state and introduce a staleness window for no gain at this size.
+  Removed rather than parked: the previous `infrastructure/warehouse/*` sketches were never applied by
+  `crdb-init` or referenced by any script, and unreachable files invite the reader to assume a system
+  is larger than it is.
 - **WebSocket transport.** SSE is the deliberate choice for a read-only broadcast stream; a WebSocket
   upgrade, if ever pursued, is its own scoped and audited change (`docs/antigravity/WEBSOCKET_UPGRADE_SPEC.md`).
 - **Multi-node / multi-region CockroachDB.** Single-node is sufficient to prove the CDC and ordering

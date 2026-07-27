@@ -25,7 +25,7 @@ require touching one, stop and flag it — there is almost always a way around.
   float64).
 
 ## Locked product decisions (see [[00-project-overview]])
-CDC = CRDB changefeeds (no Debezium). Kafka = franz-go. BI = Next.js dashboard (no Power BI). Browser
+CDC = CRDB changefeeds (no Debezium). Kafka = franz-go. Analytics = the same Next.js dashboard, no separate BI tier. Browser
 transport = SSE. DB name = `omniflow` for every service.
 
 Related: [[01-working-loop]] · [[05-gotchas]]

@@ -10,7 +10,7 @@ import (
 	inventoryv1 "omniflow/contracts/inventory/v1"
 	"omniflow/services/inventory-intelligence/internal/core/domain"
 
-	"github.com/bufbuild/protovalidate-go"
+	"buf.build/go/protovalidate"
 	"github.com/shopspring/decimal"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"google.golang.org/protobuf/proto"
@@ -20,7 +20,7 @@ import (
 type Consumer struct {
 	client    *kgo.Client
 	service   *domain.ValuationService
-	validator *protovalidate.Validator
+	validator protovalidate.Validator
 }
 
 func NewConsumer(client *kgo.Client, svc *domain.ValuationService) (*Consumer, error) {

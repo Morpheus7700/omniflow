@@ -12,7 +12,14 @@ cd "$(dirname "$0")/.."
 # green while it happens. Topics were previously left to broker auto-create, which franz-go never
 # requests — so the .dlq topics did not exist and this failure mode was live and invisible.
 #
-# The decisive assertion is the last one: a VALID message processed AFTER the poison pill. That is
+# TWO KINDS of poison are exercised, because they take different code paths:
+#   1. WIRE poison    — bytes proto.Unmarshal rejects. Returns at the unmarshal guard.
+#   2b. SEMANTIC poison — wire-valid protobuf that protovalidate rejects. This is the ONLY case that
+#       reaches validator.Validate. Testing only (1) leaves the validator's terminal-error
+#       classification completely unproven, which is how a dependency bump could wedge a partition
+#       with every CI job still green.
+#
+# The decisive assertion is the last one: a VALID message processed AFTER the poison pills. That is
 # what distinguishes "poison routed to DLQ and the stream moved on" from "partition wedged".
 #
 # CRDB_LICENSE is OPTIONAL (single-node v24.3+ runs changefeeds license-free).
@@ -92,6 +99,43 @@ fi
 echo "DLQ received: ${DLQ_MSG}"
 if [[ "$DLQ_MSG" != *"not-a-valid-protobuf"* ]]; then
     echo "FAIL: DLQ payload is not the original message body (got: ${DLQ_MSG})"
+    exit 1
+fi
+
+# 2b. THE SEMANTIC POISON PILL — wire-valid protobuf that protovalidate rejects.
+#
+#     Step 1's payload fails proto.Unmarshal and returns at the consumer's unmarshal guard, so it
+#     NEVER reaches validator.Validate. Without this step, "a protovalidate failure is terminal and
+#     routes to the DLQ" is an invariant that nothing in CI actually exercises — a dependency bump
+#     could change validation-error classification (transient instead of terminal, wedging the
+#     partition) and every job would stay green.
+#
+#     SEED_INV_INVALID sets event_id to a non-UUID. Every other field stays well-formed, so exactly
+#     one rule fails — (buf.validate.field).string.uuid — and the failure can only come from the
+#     validator, not from a malformed envelope.
+echo "Producing SEMANTIC poison pill (valid protobuf, invalid per protovalidate)..."
+SEED_ACTION=inventory SEED_MODE=inventory SEED_INV_INVALID=1 SEED_INV_SEQ=501 \
+  SEED_INV_MOVEMENT_TYPE=receipt SEED_INV_QTY="9" SEED_INV_UNIT_COST="4.00" go run ./tools/seed
+
+echo "Waiting for the semantic poison pill to reach ${DLQ_TOPIC}..."
+DLQ_BOTH="$(docker compose exec -T kafka "${KCAT}/kafka-console-consumer.sh" \
+    --bootstrap-server kafka:29092 --topic "${DLQ_TOPIC}" \
+    --from-beginning --max-messages 2 --timeout-ms 60000 2>/dev/null | tr -d '\r' || true)"
+
+if [[ "$DLQ_BOTH" != *"definitely-not-a-uuid"* ]]; then
+    echo "FAIL: the protovalidate-rejected message never reached ${DLQ_TOPIC}."
+    echo "      A validation failure is being classified as something other than terminal —"
+    echo "      it is either being retried forever or silently dropped."
+    echo "      DLQ contents were: ${DLQ_BOTH}"
+    exit 1
+fi
+echo "Semantic poison pill correctly routed to the DLQ."
+
+# It must ALSO have been rejected before persistence — a validation failure that still wrote a fact
+# row would mean the validator is running downstream of the ledger, not in front of it.
+INVALID_ROWS=$(crdb "SELECT count(*) FROM fact_inventory_movement WHERE sequence_engine_key = 501;")
+if [[ "$INVALID_ROWS" != "0" ]]; then
+    echo "FAIL: the protovalidate-rejected movement was persisted anyway (rows: '${INVALID_ROWS}')"
     exit 1
 fi
 

@@ -342,6 +342,19 @@ func seedInventory(ctx context.Context, brokers []string, eventID, traceParent, 
 		UnitCost:          unitCost,
 	}
 
+	// SEED_INV_INVALID produces a SEMANTIC poison pill: wire-valid protobuf that proto.Unmarshal
+	// accepts and protovalidate then rejects. This is the only way to exercise the validator's
+	// terminal-error path.
+	//
+	// It matters because the wire-level poison pill (a byte sequence that fails proto.Unmarshal)
+	// returns at consumer.go's unmarshal guard and NEVER reaches validator.Validate — so without
+	// this, "a protovalidate failure is terminal and goes to the DLQ" is an invariant nothing in
+	// CI actually proves. event_id carries (buf.validate.field).string.uuid, so a non-UUID is
+	// rejected by exactly one rule while every other field stays well-formed.
+	if env("SEED_INV_INVALID", "") != "" {
+		movement.EventId = "definitely-not-a-uuid"
+	}
+
 	value, err := proto.Marshal(movement)
 	if err != nil {
 		return fmt.Errorf("marshal inventory movement: %w", err)

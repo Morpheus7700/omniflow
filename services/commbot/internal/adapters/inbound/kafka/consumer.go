@@ -51,7 +51,17 @@ func NewConsumer(
 	idem IdempotencyStore,
 	tp trace.TracerProvider,
 ) (*Consumer, error) {
-	v, err := protovalidate.New()
+	// Compile the ruleset EAGERLY at startup rather than on first message.
+	//
+	// Lazily-compiled rules are cached as a per-message error and returned from EVERY subsequent
+	// Validate call. Because a validation failure is (correctly) terminal, a ruleset that fails to
+	// compile would route 100% of production traffic to the DLQ while the process reports healthy
+	// and the constructor reports success. WithDisableLazy + WithMessages turns that silent outage
+	// into a startup crash, which the constructor is already fallible enough to express.
+	v, err := protovalidate.New(
+		protovalidate.WithDisableLazy(),
+		protovalidate.WithMessages(&communicationv1.VendorEmailReceived{}),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("init protovalidate: %w", err)
 	}

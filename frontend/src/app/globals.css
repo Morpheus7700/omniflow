@@ -1,33 +1,93 @@
 @import "tailwindcss";
 
+/*
+  "Audited ledger" — the palette of a financial record under office light, not a monitoring screen.
+  The argument: what a procurement buyer is evaluating here is provability, so the interface should
+  read as a document of record rather than a radar. Every value below is used; there is no unused
+  decoration in this token set.
+*/
 :root {
-  --background: #09090b; /* zinc-950 */
-  --foreground: #fafafa; /* zinc-50 */
-  
-  /* Accent colors - muted and utilitarian */
-  --accent-primary: #3f3f46; /* zinc-700 */
-  --accent-success: #166534; /* green-800 */
-  --accent-error: #991b1b; /* red-800 */
-  --glass-bg: rgba(9, 9, 11, 0.65);
-  --glass-border: rgba(255, 255, 255, 0.08);
+  --paper: #f6f7f5; /* ledger stock, faintly warm so it is not clinical white */
+  --paper-sunk: #eef0ed; /* recessed panels and column headers */
+  --ink: #14181c; /* printed ink: near-black with a cool cast, never #000 */
+  --rule: #d9dee2; /* hairline rules; the primary structural device */
+  --muted: #5f6b75; /* secondary text and labels */
+  --settled: #1b4d3e; /* deep ledger green: the settlement guarantee */
+  --exception: #a4243b; /* stamp red: reserved strictly for breaches and failures */
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-paper: var(--paper);
+  --color-paper-sunk: var(--paper-sunk);
+  --color-ink: var(--ink);
+  --color-rule: var(--rule);
+  --color-muted: var(--muted);
+  --color-settled: var(--settled);
+  --color-exception: var(--exception);
+
+  /*
+    Mapped onto Tailwind's own font keys, NOT re-declared under the same names the Next font loader
+    already sets on <html>. `--font-display: var(--font-display)` would be self-referential and
+    resolve to nothing.
+      font-serif -> Newsreader   (display, used sparingly)
+      font-sans  -> Public Sans  (body default)
+      font-mono  -> IBM Plex Mono (figures)
+  */
+  --font-serif: var(--font-display);
+  --font-sans: var(--font-body);
+  --font-mono: var(--font-data);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: var(--font-sans), system-ui, sans-serif;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-body), system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Hide scrollbars for HUD layout */
+/*
+  Figures are compared vertically throughout this interface — HLC keys, amounts, counts — so they
+  must occupy identical width. Declared once here so no figure escapes it.
+*/
+.tnum {
+  font-family: var(--font-data), ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+/*
+  Scrollbars stay visible and styled. The previous rule hid them globally, which removes the only
+  affordance telling someone there is more record below.
+*/
 ::-webkit-scrollbar {
-  display: none;
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: var(--paper-sunk);
+}
+::-webkit-scrollbar-thumb {
+  background: #c3cad0;
+  border: 2px solid var(--paper-sunk);
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+
+:focus-visible {
+  outline: 2px solid var(--settled);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

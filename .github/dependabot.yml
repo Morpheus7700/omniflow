@@ -1,0 +1,58 @@
+version: 2
+
+# Automated dependency surveillance. This repo carries three independent ecosystems and a container
+# base-image set, and a CVE in any of them is a finding an enterprise reviewer will ask about — so
+# each is tracked separately rather than relying on a periodic manual audit.
+updates:
+  # Root Go module: commbot, p2p-orchestrator, inventory-intelligence, tools.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(go)"
+    groups:
+      # Patch bumps are routine and reviewing them one PR at a time is noise, not diligence.
+      go-patch:
+        update-types: [patch]
+
+  # viz-gateway is a SEPARATE Go module and is invisible to the root manifest.
+  - package-ecosystem: gomod
+    directory: /services/viz-gateway
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(viz)"
+    groups:
+      viz-patch:
+        update-types: [patch]
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(frontend)"
+    groups:
+      # Next.js and React must move together; splitting them produces PRs that cannot pass CI.
+      next-react:
+        patterns: ["next", "react", "react-dom", "eslint-config-next"]
+
+  # Base images are pinned deliberately (CockroachDB v24.3.3, apache/kafka:3.8.0, distroless,
+  # node:22-alpine). Pinning without surveillance is how a base image quietly rots.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "deps(docker)"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "deps(actions)"

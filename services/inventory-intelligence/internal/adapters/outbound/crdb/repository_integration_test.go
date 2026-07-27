@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 	"time"
 
@@ -33,7 +34,37 @@ import (
 // The container is driven directly rather than through testcontainers' cockroachdb helper module:
 // that module depends on pgx and would drag the production pgx version forward as a side effect of
 // adding tests. Keeping the data-path dependency untouched is worth twenty lines of setup.
-const crdbImage = "cockroachdb/cockroach:v24.3.3"
+const crdbImage = "cockroachdb/cockroach:v26.2.4"
+
+// TestCRDBImageMatchesCompose enforces the pin the comment above only asserts.
+//
+// This const is a Go string, so Dependabot's docker-compose ecosystem cannot see it: when compose
+// was bumped v24.3.3 -> v26.2.4 this file silently kept testing the OLD engine, and every job stayed
+// green while the integration suite validated a database version we no longer run. Nothing would
+// ever have reported that.
+//
+// Cheaper than wiring a YAML dependency, and it fails on the next bump rather than on the incident.
+func TestCRDBImageMatchesCompose(t *testing.T) {
+	composePath := filepath.Join(repoRoot(t), "docker-compose.yml")
+	raw, err := os.ReadFile(composePath)
+	if err != nil {
+		t.Fatalf("read %s: %v", composePath, err)
+	}
+
+	found := regexp.MustCompile(`(?m)^\s*image:\s*(cockroachdb/cockroach:\S+)`).
+		FindAllStringSubmatch(string(raw), -1)
+	if len(found) == 0 {
+		t.Fatal("no cockroachdb/cockroach image found in docker-compose.yml — did the service get renamed?")
+	}
+
+	for _, m := range found {
+		if m[1] != crdbImage {
+			t.Errorf("crdbImage drifted from docker-compose.yml:\n  test:    %s\n  compose: %s\n"+
+				"Integration tests must run the engine the stack actually deploys. Update crdbImage.",
+				crdbImage, m[1])
+		}
+	}
+}
 
 // ─── Harness ─────────────────────────────────────────────────────────────────────────────────────
 

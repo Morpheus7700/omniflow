@@ -7,6 +7,19 @@ cd "$(dirname "$0")/.."
 # is unset — the stack boots and any real licensing error surfaces as a hard failure, never a silent pass.
 
 export COMPOSE_PROJECT_NAME="omniflow-failtest-pod"
+
+# Every CockroachDB query goes through this wrapper, and the `timeout` is the whole point.
+# `docker compose exec` can block indefinitely: this job twice sat at its 25-minute cap (which GitHub
+# reports as "cancelled", not "failure") with docker/docker-compose/tail/tr left behind as orphan
+# processes. A bare deadline loop does NOT rescue that — it only re-checks the clock BETWEEN
+# iterations, never during a stuck call, so one hung exec pins the loop forever. Bounding each call is
+# what makes any surrounding deadline meaningful.
+# Returns the last CSV cell, whitespace/CR stripped; empty string on timeout or error.
+crdb() {
+    timeout 20s docker compose exec -T cockroachdb \
+        cockroach sql --insecure -d omniflow --format=csv -e "$1" 2>/dev/null \
+      | tail -n 1 | tr -d '[:space:]' || true
+}
 SSE_PID=""  # so the EXIT trap is safe under set -u even if we fail before opening the SSE stream
 
 cleanup() {
@@ -62,7 +75,11 @@ if [[ -z "$SEED_EVENT_ID" || -z "$SEED_SEQUENCE_ENGINE_KEY" ]]; then
 fi
 
 echo "Verifying workflow suspended..."
-docker compose exec -T cockroachdb cockroach sql --insecure -d omniflow -e "SELECT state FROM workflows WHERE event_id = '${SEED_EVENT_ID}';" | grep "SUSPENDED"
+SUSPENDED_STATE=$(crdb "SELECT state FROM workflows WHERE event_id = '${SEED_EVENT_ID}';")
+if [[ "$SUSPENDED_STATE" != "SUSPENDED" ]]; then
+    echo "FAIL: expected workflow state SUSPENDED before the kill, got '${SUSPENDED_STATE}'"
+    exit 1
+fi
 
 echo "Killing orchestrator..."
 docker compose kill p2p-orchestrator
@@ -107,8 +124,7 @@ echo "Waiting for the workflow to reach COMPLETED..."
 DEADLINE=$(( SECONDS + 90 ))
 STATE=""
 while (( SECONDS < DEADLINE )); do
-    STATE=$(docker compose exec -T cockroachdb cockroach sql --insecure -d omniflow --format=csv \
-        -e "SELECT state FROM workflows WHERE event_id='${SEED_EVENT_ID}';" | tail -n 1 | tr -d '[:space:]')
+    STATE=$(crdb "SELECT state FROM workflows WHERE event_id='${SEED_EVENT_ID}';")
     [[ "$STATE" == "COMPLETED" ]] && break
     sleep 2
 done
@@ -120,7 +136,7 @@ fi
 # NOW the exactly-once assertion is meaningful: the killed-and-restarted orchestrator resumed from its
 # durable checkpoint and executed final_step EXACTLY once, not zero times and not twice.
 echo "Checking ledger exactly-once state..."
-LEDGER_COUNT=$(docker compose exec -T cockroachdb cockroach sql --insecure -d omniflow --format=csv -e "SELECT count(*) FROM node_execution_ledger WHERE node_id='final_step' AND workflow_id = (SELECT id FROM workflows WHERE event_id='${SEED_EVENT_ID}');" | tail -n 1)
+LEDGER_COUNT=$(crdb "SELECT count(*) FROM node_execution_ledger WHERE node_id='final_step' AND workflow_id = (SELECT id FROM workflows WHERE event_id='${SEED_EVENT_ID}');")
 
 if [[ "$LEDGER_COUNT" != "1" ]]; then
     echo "Expected 1 completed final_step row in ledger, got ${LEDGER_COUNT}"

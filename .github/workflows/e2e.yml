@@ -20,6 +20,14 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Supersede in-flight runs for the same ref. Without this every push spawns a full parallel run while
+# the previous one keeps burning runners — during the CI convergence work several obsolete runs were
+# still executing (some pinned at the 25-minute job cap) after their fix had already been pushed,
+# which wasted minutes and made the signal harder to read.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 

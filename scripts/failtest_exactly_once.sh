@@ -8,6 +8,17 @@ cd "$(dirname "$0")/.."
 
 export COMPOSE_PROJECT_NAME="omniflow-failtest-exactly-once"
 
+# Every CockroachDB query goes through this wrapper — see the identical note in failtest_killed_pod.sh.
+# `docker compose exec` can block indefinitely (observed twice: the job pinned at its 25-minute cap
+# with docker/tail/tr surviving as orphan processes), and a deadline loop cannot rescue a stuck call
+# because it only re-checks the clock between iterations. Bounding each call is the fix.
+# Returns the last CSV cell, whitespace/CR stripped; empty string on timeout or error.
+crdb() {
+    timeout 20s docker compose exec -T cockroachdb \
+        cockroach sql --insecure -d omniflow --format=csv -e "$1" 2>/dev/null \
+      | tail -n 1 | tr -d '[:space:]' || true
+}
+
 cleanup() {
     local code=$?
     if [[ "$code" -ne 0 ]]; then
@@ -66,15 +77,16 @@ fi
 # half-finished workflow (1 outbox row instead of 2). Worse, it meant the test never actually
 # exercised what it claims: a duplicate approval arriving AFTER completion. Poll for the terminal
 # state so the duplicate is genuinely a duplicate.
-# Plain deadline loop, NOT `timeout 90s bash -c '…'` — see the note in failtest_killed_pod.sh: this
-# query needs a quoted SQL literal, and the '"'"' escaping needed to smuggle that into a single-quoted
-# bash -c silently failed to expire, hanging the job to its 25-minute cap.
+# Deadline loop over the bounded crdb() helper. Two earlier attempts at this wait both hung the job to
+# its 25-minute cap: first `timeout 90s bash -c 'until …'` (the '"'"' escaping needed to smuggle a
+# quoted SQL literal through a single-quoted bash -c silently never expired), then a plain deadline
+# loop around an UNBOUNDED docker exec (a deadline only re-checks between iterations, so one stuck call
+# pins it forever). It takes both: a per-call timeout AND an overall deadline.
 echo "Waiting for the workflow to reach COMPLETED..."
 DEADLINE=$(( SECONDS + 90 ))
 STATE=""
 while (( SECONDS < DEADLINE )); do
-    STATE=$(docker compose exec -T cockroachdb cockroach sql --insecure -d omniflow --format=csv \
-        -e "SELECT state FROM workflows WHERE event_id='${SEED_EVENT_ID}';" | tail -n 1 | tr -d '[:space:]')
+    STATE=$(crdb "SELECT state FROM workflows WHERE event_id='${SEED_EVENT_ID}';")
     [[ "$STATE" == "COMPLETED" ]] && break
     sleep 2
 done
@@ -84,7 +96,7 @@ if [[ "$STATE" != "COMPLETED" ]]; then
 fi
 
 # Record the post-completion baseline, so the duplicate is measured against a settled workflow.
-OUTBOX_BEFORE=$(docker compose exec -T cockroachdb cockroach sql --insecure -d omniflow --format=csv -e "SELECT count(*) FROM orchestrator_outbox WHERE aggregate_id = (SELECT id::STRING FROM workflows WHERE event_id='${SEED_EVENT_ID}');" | tail -n 1)
+OUTBOX_BEFORE=$(crdb "SELECT count(*) FROM orchestrator_outbox WHERE aggregate_id = (SELECT id::STRING FROM workflows WHERE event_id='${SEED_EVENT_ID}');")
 echo "Outbox rows before duplicate approval: ${OUTBOX_BEFORE}"
 
 echo "Sending duplicate approval..."
@@ -100,7 +112,7 @@ echo "Checking orchestrator_outbox rows..."
 # The `::STRING` cast is required, not cosmetic: aggregate_id is declared STRING (it doubles as the
 # Kafka partition key) while workflows.id is UUID, and CockroachDB will not silently compare the two.
 # The ledger check below needs no cast — node_execution_ledger.workflow_id is itself UUID.
-OUTBOX_COUNT=$(docker compose exec -T cockroachdb cockroach sql --insecure -d omniflow --format=csv -e "SELECT count(*) FROM orchestrator_outbox WHERE aggregate_id = (SELECT id::STRING FROM workflows WHERE event_id='${SEED_EVENT_ID}');" | tail -n 1)
+OUTBOX_COUNT=$(crdb "SELECT count(*) FROM orchestrator_outbox WHERE aggregate_id = (SELECT id::STRING FROM workflows WHERE event_id='${SEED_EVENT_ID}');")
 
 # Two assertions, because they fail for different reasons and the distinction is diagnostic:
 #   (a) the duplicate added nothing  -> suppression actually happened
@@ -117,14 +129,14 @@ if [[ "$OUTBOX_COUNT" != "2" ]]; then
     exit 1
 fi
 
-LEDGER_COUNT=$(docker compose exec -T cockroachdb cockroach sql --insecure -d omniflow --format=csv -e "SELECT count(*) FROM node_execution_ledger WHERE node_id='final_step' AND workflow_id = (SELECT id FROM workflows WHERE event_id='${SEED_EVENT_ID}');" | tail -n 1)
+LEDGER_COUNT=$(crdb "SELECT count(*) FROM node_execution_ledger WHERE node_id='final_step' AND workflow_id = (SELECT id FROM workflows WHERE event_id='${SEED_EVENT_ID}');")
 
 if [[ "$LEDGER_COUNT" != "1" ]]; then
     echo "Expected exactly 1 completed final_step row in ledger, got ${LEDGER_COUNT}"
     exit 1
 fi
 
-WORKFLOW_COUNT=$(docker compose exec -T cockroachdb cockroach sql --insecure -d omniflow --format=csv -e "SELECT count(*) FROM workflows WHERE event_id='${SEED_EVENT_ID}';" | tail -n 1)
+WORKFLOW_COUNT=$(crdb "SELECT count(*) FROM workflows WHERE event_id='${SEED_EVENT_ID}';")
 
 if [[ "$WORKFLOW_COUNT" != "1" ]]; then
     echo "Expected exactly 1 workflow row, got ${WORKFLOW_COUNT}"

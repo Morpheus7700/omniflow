@@ -212,10 +212,79 @@ done
 Always `tr -d '[:space:]'` the CSV cell — docker/cockroach output carries stray whitespace and CR.
 The `timeout bash -c` form remains fine where the query needs **no** quotes (as in the FIFO test).
 
+## A test that stops at an earlier guard proves nothing about the code behind it
+
+`failtest_dlq_poison.sh` was cited for months as the proof that "a protovalidate failure is terminal
+and routes to the DLQ". **It never tested that.** Its payload `not-a-valid-protobuf` has a leading
+byte decoding to an illegal protobuf wire type, so `proto.Unmarshal` rejects it and the consumer
+returns at the *unmarshal* guard — `validator.Validate` is never called. The script's own comment
+conceded it ("even if it somehow parsed, protovalidate would reject it").
+
+So the repo's most load-bearing consumer invariant was verified by nothing, and a dependency bump
+that reclassified validation errors as transient would have wedged the partition with all jobs green.
+
+The fix is the general lesson: **to test a code path, your input must survive every guard in front of
+it.** `SEED_INV_INVALID=1` emits *wire-valid* protobuf with a non-UUID `event_id`, so it parses
+cleanly and fails exactly one rule (`string.uuid`). Assert both that it reaches the DLQ **and** that
+no fact row was written — the second half proves the validator sits in front of the ledger.
+
+## Dependabot: ecosystems are narrower than they sound, and failures are invisible
+
+- **`docker` and `docker-compose` are SEPARATE ecosystems.** The `docker` ecosystem reads Dockerfiles
+  and Kubernetes YAML only — **not** `docker-compose.yml`. `cockroachdb/cockroach` and `apache/kafka`
+  live only in compose, so the database and the broker had *zero* surveillance while the config
+  comment claimed to cover them.
+- **`directory: /` requires a Dockerfile at the root.** There isn't one here (all 7 are one or two
+  levels down), so the ecosystem failed outright with `No Dockerfiles nor Kubernetes YAML found in /`.
+  Use `directories:` (plural) with an explicit list.
+- **`gcr.io/distroless/static:nonroot` cannot be version-bumped** — it is a floating, non-semver tag.
+  Tracking it needs digest pinning. Don't claim coverage you don't have.
+- ⚠️ **Dependabot config errors surface at `/network/updates`, NEVER as a CI check.** That is why a
+  broken ecosystem can sit unnoticed indefinitely. Check that page after editing `dependabot.yml`.
+- A module that changes its import path (`protovalidate-go` → `buf.build/go/protovalidate`) makes the
+  manifest **unresolvable**, which blocks Dependabot from updating *anything* in that module —
+  a single stale dep silently freezes the whole security pipeline.
+
+## Report-only scanners become unread scanners
+
+`gosec -no-fail` and `trivy --exit-code 0` are both deliberate (too noisy to gate on), but the result
+was that nobody read them. A `govulncheck` run found **5 CVEs the code genuinely reaches**, sitting in
+the Trivy SARIF the whole time — including two in *indirect* deps (`grpc`, `x/text`) that no
+Dependabot PR would ever have raised.
+
+`govulncheck` is call-graph aware — it reports a vulnerability only if the affected symbol is actually
+reachable — so its output is small and true enough to **gate** on. It now does. Keep Trivy for breadth,
+report-only; keep govulncheck as the gate. **Scan BOTH modules**: `services/viz-gateway` has its own
+`go.mod` and is invisible to a root-module scan (it was carrying a vulnerable `x/text` while root
+reported clean). Pin the scanner to a tag, not `@latest`, or a scanner release can redden the build
+with no code change.
+
+## Frontend build failures take down the ENTIRE E2E matrix
+
+All four compose boot jobs build the frontend image, so a `next build` failure kills jobs that have
+nothing to do with the frontend (FIFO included), in ~1m45s. TypeScript **7** does this under Next
+16.2.x (`The "id" argument must be of type string. Received undefined`); TypeScript **6** is fine —
+so the ignore rule is `versions: [">=7"]`, not `>=6`. Corollary: the boot jobs going green **is** the
+frontend build proof, which matters because `npm run build` is unusable locally under the AV.
+
 ## Dev-machine traps (not code bugs — they waste hours)
 - **`jq` is NOT installed in the Git-Bash environment.** Any script or Monitor piping through `jq`
   silently produces nothing every iteration and looks like "no events yet". Use `gh … --jq` (gh ships
   jq internally) or `--template`.
+- **`if git push …| tail -2; then break; fi` NEVER retries.** A pipeline's exit status is its *last*
+  command, so `tail` (always 0) masks the push failure and the loop breaks on the first attempt.
+  Capture separately: `OUT=$(git push 2>&1); RC=$?`. This matters here because the ISP drops
+  connections constantly — a retry loop that doesn't retry is worse than none.
+- **`next dev` is NOT throttled the way `next build` is.** Turbopack is ready in ~1s even though
+  `npm run build` gets killed by the AV at 10 min — so local visual/a11y verification of the frontend
+  IS available; only the production build must go to CI.
+- **`agent-browser`'s daemon cannot bind a socket on this box** (`os error 10013`, Windows reserved
+  port range / AV). Install and a single screenshot work, then it dies; retrying is pointless. Use
+  claude-in-chrome instead — `javascript_tool` + `read_page` cover screenshots, the accessibility
+  tree, computed label checks and `performance.getEntriesByType('resource')`.
+- **Read the accessibility tree sceptically.** Its dump showed one form input with a label and its
+  identical sibling without — the real DOM had both (`input.labels` proved it). Verify a suspected
+  a11y bug against the DOM before "fixing" it.
 - **Quick Heal real-time scanning throttles the Go build cache into uselessness.** After the
   testcontainers dependency tree landed (docker/moby/containerd/grpc), a *trivial* single-package
   `go build` exceeded 120s where it previously took seconds — the AV re-scans thousands of unseen

@@ -10,15 +10,28 @@ there is **no `librdkafka` and no C toolchain** anywhere in the build or the con
 
 ## 1. Prerequisites
 - **Go 1.25+** (both `go.mod` files declare `go 1.25.0`).
-- **`buf`** (<https://buf.build>) — the contracts import `buf/validate/validate.proto`, which buf
-  resolves from the Buf Schema Registry (raw `protoc` would need those protos vendored by hand).
+- **`buf`** (<https://buf.build>) — the contracts import `buf/validate/validate.proto`. That schema is
+  **vendored in-tree** at `third_party/proto/buf/validate/validate.proto` and listed as a local module
+  in `buf.yaml`; it is *not* fetched from the Buf Schema Registry. `buf.yaml` declares no `deps:`.
 - That's it. No CGO, no `librdkafka`, no C compiler.
 
 ## 2. Generate the protobuf Go stubs
 ```bash
-buf dep update          # fetch the protovalidate dependency
 buf generate            # writes ./contracts/**/*.pb.go
 ```
+There is deliberately no `buf dep update` step: with no `deps:` in `buf.yaml` it is a no-op, and
+running it invites the belief that the validate schema comes from the registry when it does not.
+
+> ⚠️ **Two independently-versioned copies of the same schema.**
+> `third_party/proto/buf/validate/validate.proto` (compile time) and
+> `buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go` in `go.mod` (runtime) describe the same
+> rules but are pinned separately. Refresh the vendored `.proto` without bumping the `go.mod` pin and
+> the runtime rejects rules it cannot recognise — **every** message then fails validation.
+>
+> Both consumers construct their validator with `WithDisableLazy()` + `WithMessages(...)` precisely so
+> that mismatch surfaces as a **crash at startup** rather than as a silently healthy service routing
+> 100% of traffic to the DLQ. If a service dies on boot with a protovalidate compilation error, these
+> two pins have drifted — bump them together.
 This resolves `omniflow/contracts/communication/v1` and `omniflow/contracts/inventory/v1` for every
 service that consumes or produces those events.
 

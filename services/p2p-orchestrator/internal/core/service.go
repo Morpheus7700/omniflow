@@ -5,9 +5,9 @@ import (
 	"log/slog"
 	"time"
 
+	v1 "omniflow/contracts/communication/v1"
 	"omniflow/services/p2p-orchestrator/internal/core/domain"
 	"omniflow/services/p2p-orchestrator/internal/core/ports"
-	v1 "omniflow/contracts/communication/v1"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
@@ -94,13 +94,13 @@ func (s *OrchestratorService) handleApproval(ctx context.Context, payload []byte
 	wf.State = domain.StateRunning
 	wf.OwnerPod = "" // Release the human-in-the-loop durable lease
 	wf.LeaseExpiresAt = time.Time{}
-	
+
 	outboxPayload := []byte(`{"status":"approved","node":"` + nodeID + `"}`)
-	
+
 	if err := s.store.SaveCheckpoint(ctx, tx, wf, nodeID, attempt, outboxPayload); err != nil {
 		return err
 	}
-	
+
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
@@ -159,7 +159,7 @@ func (s *OrchestratorService) drainWorkflow(ctx context.Context, wf *domain.Work
 			wf.State = domain.StateSuspended
 			wf.OwnerPod = "orchestrator-pod-local"
 			wf.LeaseExpiresAt = time.Now().Add(24 * time.Hour)
-			
+
 			if err := s.store.SaveCheckpoint(ctx, tx, wf, "", 0, nil); err != nil {
 				tx.Rollback(ctx)
 				return err
@@ -177,9 +177,12 @@ func (s *OrchestratorService) drainWorkflow(ctx context.Context, wf *domain.Work
 		if err != nil {
 			return err
 		}
-		
-		// Re-fetch under the lock to confirm the index hasn't advanced
-		latestWf, err := s.store.LoadWorkflowByEventID(ctx, wf.EventID)
+
+		// Re-fetch under the lock to confirm the index hasn't advanced.
+		// MUST use the Tx variant: AcquireLease above holds `FOR UPDATE NOWAIT` on this very row, so
+		// reading it on a separate pool connection deadlocks against our own lock and the workflow
+		// never completes.
+		latestWf, err := s.store.LoadWorkflowByEventIDTx(ctx, tx, wf.EventID)
 		if err != nil {
 			tx.Rollback(ctx)
 			return err
@@ -191,7 +194,7 @@ func (s *OrchestratorService) drainWorkflow(ctx context.Context, wf *domain.Work
 
 		wf.CurrentNodeIndex++
 		outboxPayload := []byte(`{"status":"completed","node":"` + nodeID + `"}`)
-		
+
 		if err := s.store.SaveCheckpoint(ctx, tx, wf, nodeID, attempt, outboxPayload); err != nil {
 			tx.Rollback(ctx)
 			return err

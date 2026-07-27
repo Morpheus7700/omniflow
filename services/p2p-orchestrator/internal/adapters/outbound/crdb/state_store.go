@@ -48,13 +48,16 @@ func (s *Store) LoadOrCreateWorkflow(ctx context.Context, eventID string, traceP
 	return &wf, nil
 }
 
-func (s *Store) LoadWorkflowByEventID(ctx context.Context, eventID string) (*domain.Workflow, error) {
+const loadWorkflowByEventIDSQL = `
+	SELECT id, event_id, trace_parent, sequence_engine_key, state, current_node_index, sorted_nodes, owner_pod, lease_expires_at::text
+	FROM workflows WHERE event_id = $1`
+
+// scanWorkflow decodes one workflows row. Shared so the pool-scoped and tx-scoped loaders cannot
+// drift apart in their column list.
+func scanWorkflow(row pgx.Row) (*domain.Workflow, error) {
 	var wf domain.Workflow
 	var ownerPod, leaseExpiresAt *string
-	err := s.pool.QueryRow(ctx, `
-		SELECT id, event_id, trace_parent, sequence_engine_key, state, current_node_index, sorted_nodes, owner_pod, lease_expires_at::text
-		FROM workflows WHERE event_id = $1
-	`, eventID).Scan(
+	err := row.Scan(
 		&wf.ID, &wf.EventID, &wf.TraceParent, &wf.SequenceEngineKey, &wf.State,
 		&wf.CurrentNodeIndex, &wf.SortedNodes, &ownerPod, &leaseExpiresAt,
 	)
@@ -68,6 +71,24 @@ func (s *Store) LoadWorkflowByEventID(ctx context.Context, eventID string) (*dom
 		wf.OwnerPod = *ownerPod
 	}
 	return &wf, nil
+}
+
+func (s *Store) LoadWorkflowByEventID(ctx context.Context, eventID string) (*domain.Workflow, error) {
+	return scanWorkflow(s.pool.QueryRow(ctx, loadWorkflowByEventIDSQL, eventID))
+}
+
+// LoadWorkflowByEventIDTx reads inside the caller's transaction. This exists because reading on a
+// POOL connection while that transaction holds `SELECT … FOR UPDATE NOWAIT` on the same row is a
+// self-deadlock: the pool read waits on a lock its own caller owns and can never release, so the
+// transaction never commits and the row stays locked indefinitely.
+//
+// That is not hypothetical — it was the live defect. Symptoms: workflows stuck after their first
+// node transition, exactly one orchestrator_outbox row instead of two, and every external read of
+// that workflows row blocking forever (even AS OF SYSTEM TIME '-30s', because the transaction stayed
+// open for minutes) while SELECT 1 and other tables answered instantly.
+func (s *Store) LoadWorkflowByEventIDTx(ctx context.Context, tx ports.Transaction, eventID string) (*domain.Workflow, error) {
+	ptx := tx.(*txWrapper).tx
+	return scanWorkflow(ptx.QueryRow(ctx, loadWorkflowByEventIDSQL, eventID))
 }
 
 func (s *Store) AcquireLease(ctx context.Context, workflowID string) (ports.Transaction, error) {

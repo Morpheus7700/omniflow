@@ -22,9 +22,15 @@ export default function Home() {
         different about this system before they look at a single figure.
       */}
       <section className="border-b border-[var(--rule)] py-10 md:py-14">
-        <h2 className="max-w-[24ch] font-serif text-[2rem] leading-[1.15] md:text-[2.75rem]">
+        {/*
+          h1, not h2: this is the page's one true heading. The document previously started at h2,
+          which leaves a screen reader with no top-level landmark to jump to and reads as a
+          fragment of some larger page. Purely semantic — the type scale is set by className, so
+          nothing moves visually.
+        */}
+        <h1 className="max-w-[24ch] font-serif text-[2rem] leading-[1.15] md:text-[2.75rem]">
           Every order carries a provable position in one global order.
-        </h2>
+        </h1>
         <p className="mt-4 max-w-[62ch] text-[15px] leading-relaxed text-[var(--muted)]">
           The line below marks settlement. Records above it are still in flight; records beneath it
           have been resolved by the changefeed and their order can no longer change — so they can be

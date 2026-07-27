@@ -21,11 +21,13 @@ CRDB_CID=""
 # exactly 5*(20s timeout + 2s sleep) = 110s against a 90s deadline, in two separate jobs. cockroachdb
 # was healthy throughout and the orchestrator logged no errors, so the hang is in the compose exec
 # path itself, not the database. `docker exec` skips compose's project/state resolution.
+# `tail -n +2` drops the CSV header FIRST. Without it a zero-row result returns the header text (e.g.
+# the literal "state"), which reads as data. Header-first, then last row: no rows now yields "".
 crdb() {
     [[ -n "$CRDB_CID" ]] || return 0
     timeout 20s docker exec "$CRDB_CID" \
         cockroach sql --insecure -d omniflow --format=csv -e "$1" 2>/dev/null \
-      | tail -n 1 | tr -d '[:space:]' || true
+      | tail -n +2 | tail -n 1 | tr -d '[:space:]' || true
 }
 
 # Called only on failure. crdb() swallows stderr to keep the poll quiet, which makes an erroring query

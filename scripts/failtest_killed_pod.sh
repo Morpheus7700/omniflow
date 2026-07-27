@@ -22,11 +22,14 @@ export COMPOSE_PROJECT_NAME="omniflow-failtest-pod"
 # Returns the last CSV cell, whitespace/CR stripped; empty string on timeout or error.
 CRDB_CID=""   # assigned once the stack is up, after the crdb-init gate
 
+# `tail -n +2` drops the CSV header FIRST. Without it a zero-row result returns the header text (e.g.
+# the literal "state"), which reads as data and produced the misleading failure
+# "expected SUSPENDED ... got 'state'". Header-first, then last row: no rows now yields "".
 crdb() {
     [[ -n "$CRDB_CID" ]] || return 0
     timeout 20s docker exec "$CRDB_CID" \
         cockroach sql --insecure -d omniflow --format=csv -e "$1" 2>/dev/null \
-      | tail -n 1 | tr -d '[:space:]' || true
+      | tail -n +2 | tail -n 1 | tr -d '[:space:]' || true
 }
 
 # Called only on failure. crdb() swallows stderr to keep the poll quiet, which makes an erroring query
@@ -106,10 +109,21 @@ if [[ -z "$SEED_EVENT_ID" || -z "$SEED_SEQUENCE_ENGINE_KEY" ]]; then
     exit 1
 fi
 
+# Poll, don't read once. The reads are historical (AS OF SYSTEM TIME '-5s') to avoid blocking on the
+# orchestrator's write intents, which means a row created moments ago is not visible yet — the seeder
+# reports SUSPENDED about a second before a -5s read can see it. Polling absorbs that lag; a one-shot
+# read raced it and reported an empty result.
 echo "Verifying workflow suspended..."
-SUSPENDED_STATE=$(crdb "SELECT state FROM workflows AS OF SYSTEM TIME '-5s' WHERE event_id = '${SEED_EVENT_ID}';")
+DEADLINE=$(( SECONDS + 60 ))
+SUSPENDED_STATE=""
+while (( SECONDS < DEADLINE )); do
+    SUSPENDED_STATE=$(crdb "SELECT state FROM workflows AS OF SYSTEM TIME '-5s' WHERE event_id = '${SEED_EVENT_ID}';")
+    [[ "$SUSPENDED_STATE" == "SUSPENDED" ]] && break
+    sleep 2
+done
 if [[ "$SUSPENDED_STATE" != "SUSPENDED" ]]; then
     echo "FAIL: expected workflow state SUSPENDED before the kill, got '${SUSPENDED_STATE}'"
+    crdb_diag "SELECT event_id, state FROM workflows WHERE event_id='${SEED_EVENT_ID}';"
     exit 1
 fi
 

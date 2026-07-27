@@ -41,6 +41,19 @@ crdb_diag() {
     # The AOST form is what the polls actually run, so its stderr is the one that matters. An earlier
     # diag only showed the plain query, which merely re-confirmed the (expected) intent block while
     # leaving the polls' fast-empty results unexplained.
+    # Discriminator: is the SQL LAYER wedged, or only this row? `echo alive` above proves only that
+    # the container runs. A trivial table-free query proves SQL itself still answers.
+    echo "---- SELECT 1 (is the SQL layer alive at all?) ----"
+    timeout 15s docker exec "$CRDB_CID" \
+        cockroach sql --insecure -d omniflow --format=csv -e "SELECT 1;" || echo "(exit $?)"
+    echo "---- open transactions (a long-lived one would block reads of its row) ----"
+    timeout 15s docker exec "$CRDB_CID" \
+        cockroach sql --insecure -d omniflow --format=csv \
+        -e "SELECT id, application_name, start, num_stmts FROM [SHOW CLUSTER TRANSACTIONS];" || echo "(exit $?)"
+    echo "---- a DIFFERENT table (is the block row-specific?) ----"
+    timeout 15s docker exec "$CRDB_CID" \
+        cockroach sql --insecure -d omniflow --format=csv \
+        -e "SELECT count(*) FROM orchestrator_outbox AS OF SYSTEM TIME '-30s';" || echo "(exit $?)"
     echo "---- AOST query (the form the polls use) with stderr visible ----"
     timeout 20s docker exec "$CRDB_CID" \
         cockroach sql --insecure -d omniflow --format=csv \

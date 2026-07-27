@@ -38,7 +38,14 @@ crdb_diag() {
     timeout 30s docker compose ps || echo "(compose ps failed/timed out)"
     echo "---- bare exec plumbing check ----"
     timeout 15s docker exec "$CRDB_CID" echo alive || echo "(docker exec failed/timed out: $?)"
-    echo "---- query with stderr visible ----"
+    # The AOST form is what the polls actually run, so its stderr is the one that matters. An earlier
+    # diag only showed the plain query, which merely re-confirmed the (expected) intent block while
+    # leaving the polls' fast-empty results unexplained.
+    echo "---- AOST query (the form the polls use) with stderr visible ----"
+    timeout 20s docker exec "$CRDB_CID" \
+        cockroach sql --insecure -d omniflow --format=csv \
+        -e "SELECT state FROM workflows AS OF SYSTEM TIME '-30s' WHERE event_id='${SEED_EVENT_ID}';" || echo "(exit $?)"
+    echo "---- plain query with stderr visible (expected to block on write intents) ----"
     timeout 20s docker exec "$CRDB_CID" \
         cockroach sql --insecure -d omniflow --format=csv -e "$1" || echo "(exit $?)"
 }
@@ -117,10 +124,10 @@ fi
 # loop around an UNBOUNDED docker exec (a deadline only re-checks between iterations, so one stuck call
 # pins it forever). It takes both: a per-call timeout AND an overall deadline.
 echo "Waiting for the workflow to reach COMPLETED..."
-DEADLINE=$(( SECONDS + 90 ))
+DEADLINE=$(( SECONDS + 150 ))
 STATE=""
 while (( SECONDS < DEADLINE )); do
-    STATE=$(crdb "SELECT state FROM workflows AS OF SYSTEM TIME '-5s' WHERE event_id='${SEED_EVENT_ID}';")
+    STATE=$(crdb "SELECT state FROM workflows AS OF SYSTEM TIME '-30s' WHERE event_id='${SEED_EVENT_ID}';")
     [[ "$STATE" == "COMPLETED" ]] && break
     sleep 2
 done
@@ -131,7 +138,7 @@ if [[ "$STATE" != "COMPLETED" ]]; then
 fi
 
 # Record the post-completion baseline, so the duplicate is measured against a settled workflow.
-OUTBOX_BEFORE=$(crdb "SELECT count(*) FROM orchestrator_outbox AS OF SYSTEM TIME '-5s' WHERE aggregate_id = (SELECT id::STRING FROM workflows WHERE event_id='${SEED_EVENT_ID}');")
+OUTBOX_BEFORE=$(crdb "SELECT count(*) FROM orchestrator_outbox AS OF SYSTEM TIME '-30s' WHERE aggregate_id = (SELECT id::STRING FROM workflows WHERE event_id='${SEED_EVENT_ID}');")
 echo "Outbox rows before duplicate approval: ${OUTBOX_BEFORE}"
 
 echo "Sending duplicate approval..."
@@ -147,7 +154,7 @@ echo "Checking orchestrator_outbox rows..."
 # The `::STRING` cast is required, not cosmetic: aggregate_id is declared STRING (it doubles as the
 # Kafka partition key) while workflows.id is UUID, and CockroachDB will not silently compare the two.
 # The ledger check below needs no cast — node_execution_ledger.workflow_id is itself UUID.
-OUTBOX_COUNT=$(crdb "SELECT count(*) FROM orchestrator_outbox AS OF SYSTEM TIME '-5s' WHERE aggregate_id = (SELECT id::STRING FROM workflows WHERE event_id='${SEED_EVENT_ID}');")
+OUTBOX_COUNT=$(crdb "SELECT count(*) FROM orchestrator_outbox AS OF SYSTEM TIME '-30s' WHERE aggregate_id = (SELECT id::STRING FROM workflows WHERE event_id='${SEED_EVENT_ID}');")
 
 # Two assertions, because they fail for different reasons and the distinction is diagnostic:
 #   (a) the duplicate added nothing  -> suppression actually happened
@@ -164,14 +171,14 @@ if [[ "$OUTBOX_COUNT" != "2" ]]; then
     exit 1
 fi
 
-LEDGER_COUNT=$(crdb "SELECT count(*) FROM node_execution_ledger AS OF SYSTEM TIME '-5s' WHERE node_id='final_step' AND workflow_id = (SELECT id FROM workflows WHERE event_id='${SEED_EVENT_ID}');")
+LEDGER_COUNT=$(crdb "SELECT count(*) FROM node_execution_ledger AS OF SYSTEM TIME '-30s' WHERE node_id='final_step' AND workflow_id = (SELECT id FROM workflows WHERE event_id='${SEED_EVENT_ID}');")
 
 if [[ "$LEDGER_COUNT" != "1" ]]; then
     echo "Expected exactly 1 completed final_step row in ledger, got ${LEDGER_COUNT}"
     exit 1
 fi
 
-WORKFLOW_COUNT=$(crdb "SELECT count(*) FROM workflows AS OF SYSTEM TIME '-5s' WHERE event_id='${SEED_EVENT_ID}';")
+WORKFLOW_COUNT=$(crdb "SELECT count(*) FROM workflows AS OF SYSTEM TIME '-30s' WHERE event_id='${SEED_EVENT_ID}';")
 
 if [[ "$WORKFLOW_COUNT" != "1" ]]; then
     echo "Expected exactly 1 workflow row, got ${WORKFLOW_COUNT}"

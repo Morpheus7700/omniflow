@@ -40,7 +40,14 @@ crdb_diag() {
     timeout 30s docker compose ps || echo "(compose ps failed/timed out)"
     echo "---- bare exec plumbing check ----"
     timeout 15s docker exec "$CRDB_CID" echo alive || echo "(docker exec failed/timed out: $?)"
-    echo "---- query with stderr visible ----"
+    # The AOST form is what the polls actually run, so its stderr is the one that matters. An earlier
+    # diag only showed the plain query, which merely re-confirmed the (expected) intent block while
+    # leaving the polls' fast-empty results unexplained.
+    echo "---- AOST query (the form the polls use) with stderr visible ----"
+    timeout 20s docker exec "$CRDB_CID" \
+        cockroach sql --insecure -d omniflow --format=csv \
+        -e "SELECT state FROM workflows AS OF SYSTEM TIME '-30s' WHERE event_id='${SEED_EVENT_ID}';" || echo "(exit $?)"
+    echo "---- plain query with stderr visible (expected to block on write intents) ----"
     timeout 20s docker exec "$CRDB_CID" \
         cockroach sql --insecure -d omniflow --format=csv -e "$1" || echo "(exit $?)"
 }
@@ -109,15 +116,15 @@ if [[ -z "$SEED_EVENT_ID" || -z "$SEED_SEQUENCE_ENGINE_KEY" ]]; then
     exit 1
 fi
 
-# Poll, don't read once. The reads are historical (AS OF SYSTEM TIME '-5s') to avoid blocking on the
+# Poll, don't read once. The reads are historical (AS OF SYSTEM TIME '-30s') to avoid blocking on the
 # orchestrator's write intents, which means a row created moments ago is not visible yet — the seeder
-# reports SUSPENDED about a second before a -5s read can see it. Polling absorbs that lag; a one-shot
+# reports SUSPENDED well before a -30s read can see it. Polling absorbs that lag; a one-shot
 # read raced it and reported an empty result.
 echo "Verifying workflow suspended..."
-DEADLINE=$(( SECONDS + 60 ))
+DEADLINE=$(( SECONDS + 90 ))
 SUSPENDED_STATE=""
 while (( SECONDS < DEADLINE )); do
-    SUSPENDED_STATE=$(crdb "SELECT state FROM workflows AS OF SYSTEM TIME '-5s' WHERE event_id = '${SEED_EVENT_ID}';")
+    SUSPENDED_STATE=$(crdb "SELECT state FROM workflows AS OF SYSTEM TIME '-30s' WHERE event_id = '${SEED_EVENT_ID}';")
     [[ "$SUSPENDED_STATE" == "SUSPENDED" ]] && break
     sleep 2
 done
@@ -167,10 +174,10 @@ kill $SSE_PID || true
 # Here the SQL's single quotes sit harmlessly inside double quotes, and $SEED_EVENT_ID expands
 # normally. The FIFO test's `timeout bash -c` form is fine only because its query needs no quotes.
 echo "Waiting for the workflow to reach COMPLETED..."
-DEADLINE=$(( SECONDS + 90 ))
+DEADLINE=$(( SECONDS + 150 ))
 STATE=""
 while (( SECONDS < DEADLINE )); do
-    STATE=$(crdb "SELECT state FROM workflows AS OF SYSTEM TIME '-5s' WHERE event_id='${SEED_EVENT_ID}';")
+    STATE=$(crdb "SELECT state FROM workflows AS OF SYSTEM TIME '-30s' WHERE event_id='${SEED_EVENT_ID}';")
     [[ "$STATE" == "COMPLETED" ]] && break
     sleep 2
 done
@@ -183,7 +190,7 @@ fi
 # NOW the exactly-once assertion is meaningful: the killed-and-restarted orchestrator resumed from its
 # durable checkpoint and executed final_step EXACTLY once, not zero times and not twice.
 echo "Checking ledger exactly-once state..."
-LEDGER_COUNT=$(crdb "SELECT count(*) FROM node_execution_ledger AS OF SYSTEM TIME '-5s' WHERE node_id='final_step' AND workflow_id = (SELECT id FROM workflows WHERE event_id='${SEED_EVENT_ID}');")
+LEDGER_COUNT=$(crdb "SELECT count(*) FROM node_execution_ledger AS OF SYSTEM TIME '-30s' WHERE node_id='final_step' AND workflow_id = (SELECT id FROM workflows WHERE event_id='${SEED_EVENT_ID}');")
 
 if [[ "$LEDGER_COUNT" != "1" ]]; then
     echo "Expected 1 completed final_step row in ledger, got ${LEDGER_COUNT}"

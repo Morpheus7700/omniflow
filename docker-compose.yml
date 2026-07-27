@@ -15,7 +15,7 @@ services:
     # JVM image (not apache/kafka-native): the native GraalVM image ships no JRE, so the healthcheck's
     # kafka-broker-api-versions.sh (a Java-launching shell script) can't run — kafka would never report
     # healthy and every boot job would hang. The JVM image ships the same CLI scripts *with* a JRE.
-    image: apache/kafka:3.8.0
+    image: apache/kafka:4.3.1
     ports:
       - "9092:9092"
     environment:
@@ -54,7 +54,7 @@ services:
   # request auto-topic-creation, so KAFKA_AUTO_CREATE_TOPICS_ENABLE above is inert for our services
   # (it only ever worked for CockroachDB's Java changefeed sink). Full reasoning in the script.
   kafka-init:
-    image: apache/kafka:3.8.0
+    image: apache/kafka:4.3.1
     depends_on:
       kafka:
         condition: service_healthy

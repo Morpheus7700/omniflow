@@ -118,7 +118,7 @@ echo "Waiting for the workflow to reach COMPLETED..."
 DEADLINE=$(( SECONDS + 90 ))
 STATE=""
 while (( SECONDS < DEADLINE )); do
-    STATE=$(crdb "SELECT state FROM workflows WHERE event_id='${SEED_EVENT_ID}';")
+    STATE=$(crdb "SELECT state FROM workflows AS OF SYSTEM TIME '-5s' WHERE event_id='${SEED_EVENT_ID}';")
     [[ "$STATE" == "COMPLETED" ]] && break
     sleep 2
 done
@@ -129,7 +129,7 @@ if [[ "$STATE" != "COMPLETED" ]]; then
 fi
 
 # Record the post-completion baseline, so the duplicate is measured against a settled workflow.
-OUTBOX_BEFORE=$(crdb "SELECT count(*) FROM orchestrator_outbox WHERE aggregate_id = (SELECT id::STRING FROM workflows WHERE event_id='${SEED_EVENT_ID}');")
+OUTBOX_BEFORE=$(crdb "SELECT count(*) FROM orchestrator_outbox AS OF SYSTEM TIME '-5s' WHERE aggregate_id = (SELECT id::STRING FROM workflows WHERE event_id='${SEED_EVENT_ID}');")
 echo "Outbox rows before duplicate approval: ${OUTBOX_BEFORE}"
 
 echo "Sending duplicate approval..."
@@ -145,7 +145,7 @@ echo "Checking orchestrator_outbox rows..."
 # The `::STRING` cast is required, not cosmetic: aggregate_id is declared STRING (it doubles as the
 # Kafka partition key) while workflows.id is UUID, and CockroachDB will not silently compare the two.
 # The ledger check below needs no cast — node_execution_ledger.workflow_id is itself UUID.
-OUTBOX_COUNT=$(crdb "SELECT count(*) FROM orchestrator_outbox WHERE aggregate_id = (SELECT id::STRING FROM workflows WHERE event_id='${SEED_EVENT_ID}');")
+OUTBOX_COUNT=$(crdb "SELECT count(*) FROM orchestrator_outbox AS OF SYSTEM TIME '-5s' WHERE aggregate_id = (SELECT id::STRING FROM workflows WHERE event_id='${SEED_EVENT_ID}');")
 
 # Two assertions, because they fail for different reasons and the distinction is diagnostic:
 #   (a) the duplicate added nothing  -> suppression actually happened
@@ -162,14 +162,14 @@ if [[ "$OUTBOX_COUNT" != "2" ]]; then
     exit 1
 fi
 
-LEDGER_COUNT=$(crdb "SELECT count(*) FROM node_execution_ledger WHERE node_id='final_step' AND workflow_id = (SELECT id FROM workflows WHERE event_id='${SEED_EVENT_ID}');")
+LEDGER_COUNT=$(crdb "SELECT count(*) FROM node_execution_ledger AS OF SYSTEM TIME '-5s' WHERE node_id='final_step' AND workflow_id = (SELECT id FROM workflows WHERE event_id='${SEED_EVENT_ID}');")
 
 if [[ "$LEDGER_COUNT" != "1" ]]; then
     echo "Expected exactly 1 completed final_step row in ledger, got ${LEDGER_COUNT}"
     exit 1
 fi
 
-WORKFLOW_COUNT=$(crdb "SELECT count(*) FROM workflows WHERE event_id='${SEED_EVENT_ID}';")
+WORKFLOW_COUNT=$(crdb "SELECT count(*) FROM workflows AS OF SYSTEM TIME '-5s' WHERE event_id='${SEED_EVENT_ID}';")
 
 if [[ "$WORKFLOW_COUNT" != "1" ]]; then
     echo "Expected exactly 1 workflow row, got ${WORKFLOW_COUNT}"

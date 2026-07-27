@@ -107,7 +107,7 @@ if [[ -z "$SEED_EVENT_ID" || -z "$SEED_SEQUENCE_ENGINE_KEY" ]]; then
 fi
 
 echo "Verifying workflow suspended..."
-SUSPENDED_STATE=$(crdb "SELECT state FROM workflows WHERE event_id = '${SEED_EVENT_ID}';")
+SUSPENDED_STATE=$(crdb "SELECT state FROM workflows AS OF SYSTEM TIME '-5s' WHERE event_id = '${SEED_EVENT_ID}';")
 if [[ "$SUSPENDED_STATE" != "SUSPENDED" ]]; then
     echo "FAIL: expected workflow state SUSPENDED before the kill, got '${SUSPENDED_STATE}'"
     exit 1
@@ -156,7 +156,7 @@ echo "Waiting for the workflow to reach COMPLETED..."
 DEADLINE=$(( SECONDS + 90 ))
 STATE=""
 while (( SECONDS < DEADLINE )); do
-    STATE=$(crdb "SELECT state FROM workflows WHERE event_id='${SEED_EVENT_ID}';")
+    STATE=$(crdb "SELECT state FROM workflows AS OF SYSTEM TIME '-5s' WHERE event_id='${SEED_EVENT_ID}';")
     [[ "$STATE" == "COMPLETED" ]] && break
     sleep 2
 done
@@ -169,7 +169,7 @@ fi
 # NOW the exactly-once assertion is meaningful: the killed-and-restarted orchestrator resumed from its
 # durable checkpoint and executed final_step EXACTLY once, not zero times and not twice.
 echo "Checking ledger exactly-once state..."
-LEDGER_COUNT=$(crdb "SELECT count(*) FROM node_execution_ledger WHERE node_id='final_step' AND workflow_id = (SELECT id FROM workflows WHERE event_id='${SEED_EVENT_ID}');")
+LEDGER_COUNT=$(crdb "SELECT count(*) FROM node_execution_ledger AS OF SYSTEM TIME '-5s' WHERE node_id='final_step' AND workflow_id = (SELECT id FROM workflows WHERE event_id='${SEED_EVENT_ID}');")
 
 if [[ "$LEDGER_COUNT" != "1" ]]; then
     echo "Expected 1 completed final_step row in ledger, got ${LEDGER_COUNT}"

@@ -77,8 +77,12 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: '1.25'
+      # Pinned to an immutable tag, not @latest — same standard the Trivy install below follows.
+      # A security job that fetches an unpinned toolchain on every run undercuts its own purpose,
+      # and @latest also makes the gate non-reproducible: a scanner bump could turn the build red
+      # without a single line of our code changing. Bump this tag deliberately, like any other pin.
       - name: install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
       - name: root module
         run: govulncheck ./...
       - name: viz-gateway module

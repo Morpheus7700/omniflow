@@ -10,7 +10,7 @@ import (
 	communicationv1 "omniflow/contracts/communication/v1"
 	"omniflow/services/commbot/internal/core/domain"
 
-	"github.com/bufbuild/protovalidate-go"
+	"buf.build/go/protovalidate"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
@@ -36,7 +36,7 @@ type IdempotencyStore interface {
 type Consumer struct {
 	client      *kgo.Client
 	service     *domain.CommBotService
-	validator   *protovalidate.Validator
+	validator   protovalidate.Validator
 	idempotency IdempotencyStore
 	propagator  propagation.TextMapPropagator
 	tracer      trace.Tracer

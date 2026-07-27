@@ -40,13 +40,34 @@ updates:
       # Next.js and React must move together; splitting them produces PRs that cannot pass CI.
       next-react:
         patterns: ["next", "react", "react-dom", "eslint-config-next"]
+    ignore:
+      # TypeScript 7 is the native (Go) port and its emit breaks `next build` under Next 16.2.x:
+      #   "The \"id\" argument must be of type string. Received undefined"
+      #   → Next.js build worker exited with code: 1
+      # The frontend image is built by all four compose boot jobs, so a frontend build failure takes
+      # the ENTIRE E2E matrix down — this is not a frontend-only risk. Revisit when Next declares
+      # TS 7 support; until then re-opening this weekly is pure noise.
+      - dependency-name: typescript
+        versions: [">=7"]
 
   # Base images are pinned deliberately (CockroachDB v24.3.3, apache/kafka:3.8.0, distroless,
   # node:22-alpine). Pinning without surveillance is how a base image quietly rots.
+  #
+  # There is NO Dockerfile at the repo root — every one of them lives one or two levels down, and
+  # `directory: /` made this ecosystem fail outright with "No Dockerfiles nor Kubernetes YAML found
+  # in /". Each build context must be listed explicitly.
   - package-ecosystem: docker
-    directory: /
+    directories:
+      - /frontend
+      - /services/commbot
+      - /services/inventory-intelligence
+      - /services/p2p-orchestrator
+      - /services/viz-gateway
+      - /tools/mock-llm
+      - /tools/seed
     schedule:
       interval: weekly
+    open-pull-requests-limit: 5
     commit-message:
       prefix: "deps(docker)"
 

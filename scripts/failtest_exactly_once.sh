@@ -13,10 +13,32 @@ export COMPOSE_PROJECT_NAME="omniflow-failtest-exactly-once"
 # with docker/tail/tr surviving as orphan processes), and a deadline loop cannot rescue a stuck call
 # because it only re-checks the clock between iterations. Bounding each call is the fix.
 # Returns the last CSV cell, whitespace/CR stripped; empty string on timeout or error.
+# Resolved once, after the stack is up (see CRDB_CID assignment below).
+CRDB_CID=""
+
+# Uses plain `docker exec` on a pre-resolved container id rather than `docker compose exec`.
+# Measured: every `docker compose exec` call here was hitting its 20s timeout — the poll window was
+# exactly 5*(20s timeout + 2s sleep) = 110s against a 90s deadline, in two separate jobs. cockroachdb
+# was healthy throughout and the orchestrator logged no errors, so the hang is in the compose exec
+# path itself, not the database. `docker exec` skips compose's project/state resolution.
 crdb() {
-    timeout 20s docker compose exec -T cockroachdb \
+    [[ -n "$CRDB_CID" ]] || return 0
+    timeout 20s docker exec "$CRDB_CID" \
         cockroach sql --insecure -d omniflow --format=csv -e "$1" 2>/dev/null \
       | tail -n 1 | tr -d '[:space:]' || true
+}
+
+# Called only on failure. crdb() swallows stderr to keep the poll quiet, which makes an erroring query
+# indistinguishable from one returning no rows — both come back as "". These probes separate the
+# possibilities: container state, then bare exec plumbing, then the query with stderr visible.
+crdb_diag() {
+    echo "---- docker compose ps ----"
+    timeout 30s docker compose ps || echo "(compose ps failed/timed out)"
+    echo "---- bare exec plumbing check ----"
+    timeout 15s docker exec "$CRDB_CID" echo alive || echo "(docker exec failed/timed out: $?)"
+    echo "---- query with stderr visible ----"
+    timeout 20s docker exec "$CRDB_CID" \
+        cockroach sql --insecure -d omniflow --format=csv -e "$1" || echo "(exit $?)"
 }
 
 cleanup() {
@@ -54,6 +76,16 @@ docker compose wait crdb-init >/dev/null 2>&1 || true
 INIT_CID="$(docker compose ps -aq crdb-init)"
 INIT_CODE="$(docker inspect -f '{{.State.ExitCode}}' "$INIT_CID" 2>/dev/null || echo unknown)"
 echo "crdb-init exit code: ${INIT_CODE}"
+
+# Resolve the CockroachDB container id ONCE, now that the stack is up. Every later query uses plain
+# `docker exec` against this id, keeping compose out of the polling hot path.
+CRDB_CID="$(docker compose ps -q cockroachdb)"
+if [[ -z "$CRDB_CID" ]]; then
+    echo "FAIL: could not resolve the cockroachdb container id"
+    docker compose ps || true
+    exit 1
+fi
+echo "cockroachdb container: ${CRDB_CID:0:12}"
 [[ "$INIT_CODE" == "0" ]] || { echo "crdb-init failed (exit $INIT_CODE)"; docker compose logs crdb-init || true; exit 1; }
 
 sleep 5 # Allow seeders and orchestrator to become fully healthy
@@ -92,6 +124,7 @@ while (( SECONDS < DEADLINE )); do
 done
 if [[ "$STATE" != "COMPLETED" ]]; then
     echo "FAIL: workflow never reached COMPLETED before the duplicate approval (last state: '${STATE}')"
+    crdb_diag "SELECT event_id, state FROM workflows WHERE event_id='${SEED_EVENT_ID}';"
     exit 1
 fi
 

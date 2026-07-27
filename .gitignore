@@ -50,7 +50,7 @@ Architecture base */
 **/Architecture base */
 # Antigravity-generated notes vault. Duplicates docs/kb/, which is the canonical one —
 # two vaults claiming to be "the source of truth" is worse than one.
-truth/
+/truth/
 
 # ---- Generated protobuf note ----
 # NOTE: *.pb.go ARE committed (generated stubs checked in intentionally, per BUILD.md flow).

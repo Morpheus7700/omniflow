@@ -50,12 +50,15 @@ updates:
       - dependency-name: typescript
         versions: [">=7"]
 
-  # Base images are pinned deliberately (CockroachDB v24.3.3, apache/kafka:3.8.0, distroless,
-  # node:22-alpine). Pinning without surveillance is how a base image quietly rots.
+  # Dockerfile BUILD stages. There is NO Dockerfile at the repo root — every one lives one or two
+  # levels down, and `directory: /` made this ecosystem fail outright with "No Dockerfiles nor
+  # Kubernetes YAML found in /", so nothing here was ever actually surveilled. Each build context
+  # must be listed explicitly.
   #
-  # There is NO Dockerfile at the repo root — every one of them lives one or two levels down, and
-  # `directory: /` made this ecosystem fail outright with "No Dockerfiles nor Kubernetes YAML found
-  # in /". Each build context must be listed explicitly.
+  # Realistic coverage is the `golang:*` and `node:*` builder stages. The runtime stage of all five
+  # Go images is `gcr.io/distroless/static:nonroot` — a floating, non-semver tag Dependabot cannot
+  # version-bump. Tracking distroless properly would require digest pinning; until then, do not
+  # claim it is covered.
   - package-ecosystem: docker
     directories:
       - /frontend
@@ -70,6 +73,20 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: "deps(docker)"
+
+  # RUNTIME images — cockroachdb/cockroach:v24.3.3 and apache/kafka:3.8.0 appear ONLY in
+  # docker-compose.yml, never in a Dockerfile. `docker` and `docker-compose` are distinct Dependabot
+  # ecosystems and the former does not read compose files, so these two pins — the database and the
+  # broker, the most security-sensitive images in the stack — had zero surveillance while the config
+  # appeared to cover them. Dependabot config errors surface at /network/updates, never as a CI
+  # check, which is why that gap could sit unnoticed indefinitely.
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(compose)"
 
   - package-ecosystem: github-actions
     directory: /

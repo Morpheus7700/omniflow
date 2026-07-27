@@ -54,6 +54,37 @@ jobs:
           go vet ./...
           go test ./...
 
+  # Reachability-based CVE scanning, and the ONLY security job here that actually gates.
+  #
+  # gosec runs `-no-fail` and Trivy runs `--exit-code 0`, both deliberately: they are broad,
+  # manifest-and-pattern based, and noisy enough that gating on them would train everyone to ignore
+  # a red build. That is a reasonable trade — but it left a real gap, because "report-only" meant
+  # nobody was reading them. A scan on master found FIVE vulnerabilities our code genuinely reaches,
+  # sitting in plain sight in the Trivy SARIF the whole time.
+  #
+  # govulncheck is different in kind: it walks the call graph and reports a vulnerability only if
+  # your code actually reaches the affected symbol. That makes its output small and true enough to
+  # block on, which is the entire point of adding it. If this job goes red, a reachable CVE landed —
+  # fix the dependency, do not add an exclusion.
+  #
+  # Both modules are scanned. viz-gateway has its own go.mod and is invisible to a root-module scan;
+  # it was carrying a vulnerable golang.org/x/text that the root scan reported as clean.
+  govulncheck:
+    name: govulncheck (reachable CVEs, gating)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.25'
+      - name: install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - name: root module
+        run: govulncheck ./...
+      - name: viz-gateway module
+        working-directory: services/viz-gateway
+        run: govulncheck ./...
+
   integration:
     name: integration tests (testcontainers + real CRDB)
     needs: build

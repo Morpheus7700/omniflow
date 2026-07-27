@@ -1,71 +1,70 @@
 'use client';
 
 import { useState } from 'react';
-import { HUD } from '@/components/HUD';
+import { Ledger } from '@/components/Ledger';
+import { Rail } from '@/components/Rail';
 import { useEventBuffer } from '@/hooks/useEventBuffer';
-import { motion, AnimatePresence } from 'framer-motion';
-import { Activity, ShieldAlert, Cpu } from 'lucide-react';
 
 export default function Home() {
-  const [replayRange, setReplayRange] = useState<{from: bigint | null, to: bigint | null}>({ from: null, to: null });
-  const { status } = useEventBuffer(replayRange.from, replayRange.to);
+  const [range, setRange] = useState<{ from: bigint | null; to: bigint | null }>({
+    from: null,
+    to: null,
+  });
+  const { status } = useEventBuffer(range.from, range.to);
+  const replaying = range.from !== null;
 
   return (
-    <main className="w-screen h-screen bg-[#060a10] text-zinc-300 overflow-hidden font-sans flex">
-      
-      {/* Sidebar Navigation */}
-      <aside className="w-16 md:w-64 border-r border-white/5 bg-[#0a0e1a]/80 backdrop-blur-xl flex flex-col items-center md:items-start py-6 transition-all duration-300 z-20">
-        <div className="flex items-center gap-3 px-0 md:px-6 mb-12">
-          <div className="w-10 h-10 rounded bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center shadow-[0_0_15px_rgba(0,240,255,0.1)]">
-            <Cpu className="w-5 h-5 text-cyan-400" />
-          </div>
-          <h1 className="hidden md:block text-lg font-bold tracking-widest text-white uppercase">OmniFlow</h1>
-        </div>
-        
-        <nav className="flex flex-col gap-4 w-full px-4 md:px-6">
-          <NavItem icon={<Activity className="w-5 h-5" />} label="Orchestration" active />
-          <NavItem icon={<ShieldAlert className="w-5 h-5" />} label="System Health" />
-        </nav>
-      </aside>
+    <main className="mx-auto flex min-h-screen max-w-[1400px] flex-col px-6 md:px-10">
+      <Masthead />
 
-      {/* Main Content Area */}
-      <div className="flex-1 flex flex-col h-full overflow-hidden relative">
-        {/* Header */}
-        <header className="h-16 border-b border-white/5 bg-[#0d1117]/80 backdrop-blur-md flex items-center px-8 justify-between z-10 shrink-0">
-          <div className="flex items-center gap-4">
-            <span className="text-xs font-mono text-cyan-400/70 tracking-widest uppercase">/ Platform / Orchestration / Live View</span>
-          </div>
-          
-          {/* Connection Error Toast positioned in header */}
-          <AnimatePresence>
-            {status === 'error' && (
-              <motion.div 
-                initial={{ opacity: 0, y: -10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                className="bg-fuchsia-900/40 border border-[#ff00e5]/30 text-[#ff00e5] px-4 py-1.5 rounded text-xs font-mono tracking-wider flex items-center gap-3"
-              >
-                <div className="w-1.5 h-1.5 rounded-full bg-[#ff00e5] animate-pulse" />
-                STREAM DISCONNECTED
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </header>
+      {/*
+        The thesis, stated once at the top in the display face. A buyer should learn what is
+        different about this system before they look at a single figure.
+      */}
+      <section className="border-b border-[var(--rule)] py-10 md:py-14">
+        <h2 className="max-w-[24ch] font-serif text-[2rem] leading-[1.15] md:text-[2.75rem]">
+          Every order carries a provable position in one global order.
+        </h2>
+        <p className="mt-4 max-w-[62ch] text-[15px] leading-relaxed text-[var(--muted)]">
+          The line below marks settlement. Records above it are still in flight; records beneath it
+          have been resolved by the changefeed and their order can no longer change — so they can be
+          reconciled, audited, and replayed exactly as they happened.
+        </p>
+      </section>
 
-        {/* Dashboard Grid Container */}
-        <div className="flex-1 p-6 md:p-8 overflow-y-auto custom-scrollbar relative bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] bg-repeat">
-           <HUD onReplay={(from, to) => setReplayRange({ from, to })} />
-        </div>
+      <div className="grid flex-1 gap-10 py-8 md:grid-cols-[minmax(0,260px)_minmax(0,1fr)] md:gap-14">
+        <aside className="md:border-r md:border-[var(--rule)] md:pr-10">
+          <Rail
+            status={status}
+            replaying={replaying}
+            onReplay={(from, to) => setRange({ from, to })}
+            onGoLive={() => setRange({ from: null, to: null })}
+          />
+        </aside>
+
+        <Ledger />
       </div>
+
+      <footer className="border-t border-[var(--rule)] py-6 text-[12px] text-[var(--muted)]">
+        Ordering is established by a hybrid logical clock and carried end to end as an exact integer.
+        Settlement follows the CockroachDB changefeed resolved watermark.
+      </footer>
     </main>
   );
 }
 
-function NavItem({ icon, label, active = false }: { icon: React.ReactNode, label: string, active?: boolean }) {
+function Masthead() {
   return (
-    <div className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-all ${active ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/20' : 'text-zinc-500 hover:text-zinc-300 hover:bg-white/5'}`}>
-      {icon}
-      <span className="hidden md:block text-xs font-semibold tracking-wider uppercase">{label}</span>
-    </div>
+    <header className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2 border-b border-[var(--ink)] py-5">
+      <div className="flex items-baseline gap-3">
+        <span className="font-serif text-xl tracking-tight">
+          OmniFlow
+        </span>
+        <span className="text-[13px] text-[var(--muted)]">Procure-to-pay orchestration</span>
+      </div>
+      <span className="text-[11px] uppercase tracking-[0.14em] text-[var(--muted)]">
+        Live operations
+      </span>
+    </header>
   );
 }

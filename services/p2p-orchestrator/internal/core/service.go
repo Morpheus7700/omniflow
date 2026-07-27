@@ -77,18 +77,28 @@ func (s *OrchestratorService) handleApproval(ctx context.Context, payload []byte
 	nodeID := wf.NextNode()
 
 	if wf.State != domain.StateSuspended || nodeID != "human_approval" {
-		slog.Warn("Stray human approval event or workflow not suspended", "wf_id", wf.ID)
+		slog.Warn("stray approval ignored",
+			"workflow_id", wf.ID, "event_id", wf.EventID, "state", wf.State, "next_node", nodeID)
 		return nil
 	}
 
 	attempt := 1
 	executed, err := s.store.CheckIdempotency(ctx, wf.ID, nodeID, attempt)
 	if err != nil {
+		slog.Error("idempotency check failed on approval",
+			"workflow_id", wf.ID, "event_id", wf.EventID, "error", err)
 		return err
 	}
 	if executed {
+		// The duplicate-approval suppression path. Silence here made it impossible to tell
+		// suppression from a dropped message; this is the line that proves exactly-once held.
+		slog.Info("duplicate approval suppressed",
+			"workflow_id", wf.ID, "event_id", wf.EventID, "approved_by", event.ApprovedBy)
 		return nil
 	}
+
+	slog.Info("approval accepted, resuming workflow",
+		"workflow_id", wf.ID, "event_id", wf.EventID, "approved_by", event.ApprovedBy)
 
 	wf.CurrentNodeIndex++
 	wf.State = domain.StateRunning
@@ -109,8 +119,16 @@ func (s *OrchestratorService) handleApproval(ctx context.Context, payload []byte
 }
 
 func (s *OrchestratorService) drainWorkflow(ctx context.Context, wf *domain.Workflow) error {
+	// Every branch below is logged. This path previously emitted NOTHING — not a node transition, not
+	// a lease acquisition, not a completion — which is why a workflow that stalled mid-DAG was
+	// indistinguishable from one that was merely slow, and why a self-deadlock here went undiagnosed
+	// through several CI runs. Workflow id and event id are on every line so a single record can be
+	// followed end to end across services by either key.
+	log := slog.With("workflow_id", wf.ID, "event_id", wf.EventID, "seq_key", wf.SequenceEngineKey)
+
 	for {
 		if wf.State == domain.StateCompleted || wf.State == domain.StateFailed || wf.State == domain.StateSuspended {
+			log.Info("drain stopped", "state", wf.State, "node_index", wf.CurrentNodeIndex)
 			return nil
 		}
 
@@ -118,22 +136,27 @@ func (s *OrchestratorService) drainWorkflow(ctx context.Context, wf *domain.Work
 		if nodeID == "" {
 			tx, err := s.store.AcquireLease(ctx, wf.ID)
 			if err != nil {
+				log.Warn("lease unavailable while completing", "error", err)
 				return err
 			}
 
 			wf.State = domain.StateCompleted
 			if err := s.store.SaveCheckpoint(ctx, tx, wf, "", 0, nil); err != nil {
 				tx.Rollback(ctx)
+				log.Error("checkpoint failed while completing", "error", err)
 				return err
 			}
 			if err := tx.Commit(ctx); err != nil {
+				log.Error("commit failed while completing", "error", err)
 				return err
 			}
+			log.Info("workflow completed", "nodes_executed", wf.CurrentNodeIndex)
 			return nil
 		}
 
 		tx, err := s.store.AcquireLease(ctx, wf.ID)
 		if err != nil {
+			log.Warn("lease unavailable", "node", nodeID, "error", err)
 			return err
 		}
 
@@ -141,17 +164,24 @@ func (s *OrchestratorService) drainWorkflow(ctx context.Context, wf *domain.Work
 		executed, err := s.store.CheckIdempotency(ctx, wf.ID, nodeID, attempt)
 		if err != nil {
 			tx.Rollback(ctx)
+			log.Error("idempotency check failed", "node", nodeID, "error", err)
 			return err
 		}
 		if executed {
+			// Redelivery of an already-executed node. Expected under at-least-once, so it is info,
+			// not a warning — but it must be visible, because a flood of these means offsets are
+			// not advancing.
 			wf.CurrentNodeIndex++
 			if err := s.store.SaveCheckpoint(ctx, tx, wf, nodeID, attempt, nil); err != nil {
 				tx.Rollback(ctx)
+				log.Error("checkpoint failed on replayed node", "node", nodeID, "error", err)
 				return err
 			}
 			if err := tx.Commit(ctx); err != nil {
+				log.Error("commit failed on replayed node", "node", nodeID, "error", err)
 				return err
 			}
+			log.Info("node already executed, advancing", "node", nodeID, "attempt", attempt)
 			continue
 		}
 
@@ -162,9 +192,15 @@ func (s *OrchestratorService) drainWorkflow(ctx context.Context, wf *domain.Work
 
 			if err := s.store.SaveCheckpoint(ctx, tx, wf, "", 0, nil); err != nil {
 				tx.Rollback(ctx)
+				log.Error("checkpoint failed while suspending", "error", err)
 				return err
 			}
-			return tx.Commit(ctx)
+			if err := tx.Commit(ctx); err != nil {
+				log.Error("commit failed while suspending", "error", err)
+				return err
+			}
+			log.Info("suspended awaiting human approval", "lease_expires_at", wf.LeaseExpiresAt)
+			return nil
 		}
 
 		// Fast DB tx explicit exit: release FOR UPDATE lock for slow I/O
@@ -175,6 +211,7 @@ func (s *OrchestratorService) drainWorkflow(ctx context.Context, wf *domain.Work
 		// Re-acquire to checkpoint the node completion
 		tx, err = s.store.AcquireLease(ctx, wf.ID)
 		if err != nil {
+			log.Warn("lease unavailable when checkpointing node completion", "node", nodeID, "error", err)
 			return err
 		}
 
@@ -185,11 +222,16 @@ func (s *OrchestratorService) drainWorkflow(ctx context.Context, wf *domain.Work
 		latestWf, err := s.store.LoadWorkflowByEventIDTx(ctx, tx, wf.EventID)
 		if err != nil {
 			tx.Rollback(ctx)
+			log.Error("re-fetch under lease failed", "node", nodeID, "error", err)
 			return err
 		}
 		if latestWf.CurrentNodeIndex != wf.CurrentNodeIndex {
 			tx.Rollback(ctx)
-			return nil // quiet abort, another worker advanced it
+			// Another pod advanced this workflow. Benign, but no longer silent: repeated occurrences
+			// indicate two pods contending for the same workflow.
+			log.Info("yielding, another worker advanced this workflow",
+				"node", nodeID, "our_index", wf.CurrentNodeIndex, "observed_index", latestWf.CurrentNodeIndex)
+			return nil
 		}
 
 		wf.CurrentNodeIndex++
@@ -197,10 +239,13 @@ func (s *OrchestratorService) drainWorkflow(ctx context.Context, wf *domain.Work
 
 		if err := s.store.SaveCheckpoint(ctx, tx, wf, nodeID, attempt, outboxPayload); err != nil {
 			tx.Rollback(ctx)
+			log.Error("checkpoint failed on node completion", "node", nodeID, "error", err)
 			return err
 		}
 		if err := tx.Commit(ctx); err != nil {
+			log.Error("commit failed on node completion", "node", nodeID, "error", err)
 			return err
 		}
+		log.Info("node completed", "node", nodeID, "attempt", attempt, "node_index", wf.CurrentNodeIndex)
 	}
 }

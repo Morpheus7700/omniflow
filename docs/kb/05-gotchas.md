@@ -160,6 +160,58 @@ pattern: fixing infra unmasks the next latent layer.
 - Fix = `infrastructure/init/kafka-init.sh` creates all 10 topics explicitly (RF=1 single broker;
   partitions=1 keeps per-key ordering total for the HLC assertions); `crdb-init` gates on it.
 
+## Boot-proof scripts: assert the terminal state, never a proxy for it
+Once E2E and FIFO went green (2026-07-27), the two still-failing jobs turned out to be bugs in the
+**tests**, not the system — both used a stand-in for "the workflow finished":
+
+- `failtest_killed_pod.sh` treated **the arrival of an SSE event** as completion. That event is emitted
+  by the FIRST payload-bearing checkpoint (`service.go:100`); the DAG still has nodes to run before
+  `final_step` lands (`service.go:195`). It asserted terminal state mid-DAG → "Expected 1 final_step
+  row, got 0".
+- `failtest_exactly_once.sh` used **`sleep 3`** as "wait for completion". Wrong on a CI runner, so the
+  duplicate approval landed mid-flight and the assertion read a half-built workflow (1 outbox row, not
+  2). It also meant the test never exercised its own premise: a duplicate arriving *after* completion.
+
+Rule: poll for the real terminal condition (`SELECT state … == 'COMPLETED'`, or the row you expect)
+with a generous timeout, and print the last observed state when the timeout fires. A bare `timeout`
+under `set -e` exits 124 with no message and is indistinguishable from a crash.
+
+Two payload-bearing `SaveCheckpoint` calls exist, so a completed workflow has **exactly 2**
+`orchestrator_outbox` rows. When asserting suppression, check BOTH that the count equals the
+pre-duplicate baseline (suppression happened) AND its absolute value (the DAG emitted what it should)
+— either alone can pass for the wrong reason.
+
+Calibration from a real run: after approval the SSE event took **17s** to arrive. Windows of 20s are
+one second from being permanent flakes; use 40s+, and remember these scripts also run on cold-pull
+runners where boot alone is ~4min.
+
+### A `timeout-minutes` expiry reports as CANCELLED, not FAILURE
+This is actively misleading and cost a wrong diagnosis (assumed a manual cancel or an Actions quota).
+The tell is arithmetic: both jobs ran **exactly 25m14s** against `timeout-minutes: 25`. If a job's
+duration equals its `timeout-minutes`, it hung — look for the last line it printed, not for an
+external cause. `gh api …/jobs --jq '… started_at, completed_at, steps'` gives the timing and shows
+which step was cut off.
+
+### Don't smuggle a quoted SQL literal into `timeout bash -c '…'`
+That hang was self-inflicted: `timeout 90s bash -c 'until [[ "$(… -e "SELECT state … event_id='…';")" ]]'`
+needs `'"'"'` escaping to get the SQL quotes through a single-quoted `bash -c`, and it silently never
+expired — the job ran to its 25-minute cap instead of failing at 90s. Use a plain deadline loop in the
+main shell, where the SQL's single quotes sit harmlessly inside double quotes:
+
+```bash
+DEADLINE=$(( SECONDS + 90 )); STATE=""
+while (( SECONDS < DEADLINE )); do
+    STATE=$(docker compose exec -T cockroachdb cockroach sql --insecure -d omniflow --format=csv \
+        -e "SELECT state FROM workflows WHERE event_id='${EVENT_ID}';" | tail -n 1 | tr -d '[:space:]')
+    [[ "$STATE" == "COMPLETED" ]] && break
+    sleep 2
+done
+[[ "$STATE" == "COMPLETED" ]] || { echo "FAIL: last state '${STATE}'"; exit 1; }
+```
+
+Always `tr -d '[:space:]'` the CSV cell — docker/cockroach output carries stray whitespace and CR.
+The `timeout bash -c` form remains fine where the query needs **no** quotes (as in the FIFO test).
+
 ## Dev-machine traps (not code bugs — they waste hours)
 - **`jq` is NOT installed in the Git-Bash environment.** Any script or Monitor piping through `jq`
   silently produces nothing every iteration and looks like "no events yet". Use `gh … --jq` (gh ships

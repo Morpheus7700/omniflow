@@ -152,6 +152,7 @@ duplicating DDL, so the test cannot drift from what deploys.
 | `test durable checkpoint resume` | `scripts/failtest_killed_pod.sh` | orchestrator killed mid-workflow resumes from its durable checkpoint and completes exactly once |
 | `test exactly-once delivery` | `scripts/failtest_exactly_once.sh` | a duplicate approval produces no extra outbox rows, ledger entries, or workflows |
 | `test FIFO late-arrival restatement` | `scripts/failtest_fifo_restatement.sh` | a receipt arriving after a later consumption restates the SKU's FIFO cost basis in HLC order |
+| `test DLQ poison-pill routing` | `scripts/failtest_dlq_poison.sh` | an undecodable message is routed to the `.dlq` topic, its source offset is committed, and a valid message behind it still processes — i.e. the partition is not wedged |
 
 The tiers deliberately overlap on the FIFO restatement invariant — Tier 1 proves the arithmetic in
 milliseconds, Tier 2 proves it survives a real DECIMAL/INT8 round trip, Tier 3 proves it survives the

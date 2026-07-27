@@ -145,6 +145,29 @@ jobs:
       - name: Run FIFO restatement test
         run: bash scripts/failtest_fifo_restatement.sh
 
+  failtest-dlq-poison:
+    name: test DLQ poison-pill routing
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25   # a Kafka-healthcheck / changefeed stall must fail fast+clean, not hang to the 6h cap
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    env:
+      CRDB_LICENSE: ${{ secrets.CRDB_LICENSE }}
+      CRDB_ORG: ${{ secrets.CRDB_ORG }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      # The only test that exercises the dead-letter path. Every consumer commits its offset ONLY
+      # after DLQ delivery is confirmed, so a broken DLQ wedges the partition permanently while every
+      # happy-path job stays green. Asserts: poison pill reaches the .dlq topic, the source offset is
+      # committed (lag drains to 0), and a VALID message after it still processes.
+      - name: Run DLQ poison-pill test
+        run: bash scripts/failtest_dlq_poison.sh
+
   security:
     name: security scan (gosec + trivy)
     runs-on: ubuntu-latest

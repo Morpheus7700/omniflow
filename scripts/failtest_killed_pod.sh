@@ -97,12 +97,25 @@ kill $SSE_PID || true
 # payload-bearing checkpoint; the DAG still has nodes to execute before `final_step` lands. Asserting
 # terminal state the instant that event arrives is a race — it read `final_step = 0` and failed while
 # the orchestrator was mid-DAG. Wait for the terminal state explicitly.
+# Plain deadline loop, deliberately NOT `timeout 90s bash -c '…'`.
+# This query needs a quoted SQL literal (event_id='…'), and smuggling that through a single-quoted
+# `bash -c` requires '"'"' escaping that silently misbehaved: the loop never expired and the job hung
+# to its 25-minute cap (which GitHub reports as "cancelled", not "failure" — see 05-gotchas).
+# Here the SQL's single quotes sit harmlessly inside double quotes, and $SEED_EVENT_ID expands
+# normally. The FIFO test's `timeout bash -c` form is fine only because its query needs no quotes.
 echo "Waiting for the workflow to reach COMPLETED..."
-timeout 90s bash -c 'until [[ "$(docker compose exec -T cockroachdb cockroach sql --insecure -d omniflow --format=csv -e "SELECT state FROM workflows WHERE event_id='"'"'"'"${SEED_EVENT_ID}"'"'"'"';" | tail -n 1)" == "COMPLETED" ]]; do sleep 2; done' || {
-    STATE=$(docker compose exec -T cockroachdb cockroach sql --insecure -d omniflow --format=csv -e "SELECT state FROM workflows WHERE event_id='${SEED_EVENT_ID}';" | tail -n 1)
-    echo "FAIL: workflow never reached COMPLETED after resume (last state: ${STATE})"
+DEADLINE=$(( SECONDS + 90 ))
+STATE=""
+while (( SECONDS < DEADLINE )); do
+    STATE=$(docker compose exec -T cockroachdb cockroach sql --insecure -d omniflow --format=csv \
+        -e "SELECT state FROM workflows WHERE event_id='${SEED_EVENT_ID}';" | tail -n 1 | tr -d '[:space:]')
+    [[ "$STATE" == "COMPLETED" ]] && break
+    sleep 2
+done
+if [[ "$STATE" != "COMPLETED" ]]; then
+    echo "FAIL: workflow never reached COMPLETED after resume (last state: '${STATE}')"
     exit 1
-}
+fi
 
 # NOW the exactly-once assertion is meaningful: the killed-and-restarted orchestrator resumed from its
 # durable checkpoint and executed final_step EXACTLY once, not zero times and not twice.

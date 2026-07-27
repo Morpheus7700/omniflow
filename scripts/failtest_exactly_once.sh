@@ -66,12 +66,22 @@ fi
 # half-finished workflow (1 outbox row instead of 2). Worse, it meant the test never actually
 # exercised what it claims: a duplicate approval arriving AFTER completion. Poll for the terminal
 # state so the duplicate is genuinely a duplicate.
+# Plain deadline loop, NOT `timeout 90s bash -c '…'` — see the note in failtest_killed_pod.sh: this
+# query needs a quoted SQL literal, and the '"'"' escaping needed to smuggle that into a single-quoted
+# bash -c silently failed to expire, hanging the job to its 25-minute cap.
 echo "Waiting for the workflow to reach COMPLETED..."
-timeout 90s bash -c 'until [[ "$(docker compose exec -T cockroachdb cockroach sql --insecure -d omniflow --format=csv -e "SELECT state FROM workflows WHERE event_id='"'"'"'"${SEED_EVENT_ID}"'"'"'"';" | tail -n 1)" == "COMPLETED" ]]; do sleep 2; done' || {
-    STATE=$(docker compose exec -T cockroachdb cockroach sql --insecure -d omniflow --format=csv -e "SELECT state FROM workflows WHERE event_id='${SEED_EVENT_ID}';" | tail -n 1)
-    echo "FAIL: workflow never reached COMPLETED before the duplicate approval (last state: ${STATE})"
+DEADLINE=$(( SECONDS + 90 ))
+STATE=""
+while (( SECONDS < DEADLINE )); do
+    STATE=$(docker compose exec -T cockroachdb cockroach sql --insecure -d omniflow --format=csv \
+        -e "SELECT state FROM workflows WHERE event_id='${SEED_EVENT_ID}';" | tail -n 1 | tr -d '[:space:]')
+    [[ "$STATE" == "COMPLETED" ]] && break
+    sleep 2
+done
+if [[ "$STATE" != "COMPLETED" ]]; then
+    echo "FAIL: workflow never reached COMPLETED before the duplicate approval (last state: '${STATE}')"
     exit 1
-}
+fi
 
 # Record the post-completion baseline, so the duplicate is measured against a settled workflow.
 OUTBOX_BEFORE=$(docker compose exec -T cockroachdb cockroach sql --insecure -d omniflow --format=csv -e "SELECT count(*) FROM orchestrator_outbox WHERE aggregate_id = (SELECT id::STRING FROM workflows WHERE event_id='${SEED_EVENT_ID}');" | tail -n 1)

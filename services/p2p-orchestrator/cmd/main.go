@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
@@ -85,7 +86,7 @@ func main() {
 		MaxCostPerWorkflowMicroUSD: envUint("AGENT_MAX_COST_PER_WORKFLOW_MICRO_USD", 500_000),     // $0.50
 		MaxEstimatedCallMicroUSD:   envUint("AGENT_MAX_CALL_MICRO_USD", 100_000),                  // $0.10
 		AutonomousCeilingMicroUSD:  envUint("AGENT_AUTONOMOUS_CEILING_MICRO_USD", 50_000_000_000), // $50,000
-	}, envFloat("AGENT_RATE_RPS", 2), int(envUint("AGENT_RATE_BURST", 4)))
+	}, envFloat("AGENT_RATE_RPS", 2), envInt("AGENT_RATE_BURST", 4))
 
 	drafter := agent.NewPODrafter(litellmURL, os.Getenv("LITELLM_KEY"), agentModel, guard, store)
 
@@ -176,6 +177,25 @@ func envUint(k string, def uint64) uint64 {
 		return def
 	}
 	return v
+}
+
+// envInt reads a non-negative integer setting and enforces int bounds before conversion.
+// A malformed or out-of-range value falls back to default.
+func envInt(k string, def int) int {
+	raw := os.Getenv(k)
+	if raw == "" {
+		return def
+	}
+	v, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		slog.Error("invalid integer setting, using default", "key", k, "value", raw, "default", def, "error", err)
+		return def
+	}
+	if v > uint64(math.MaxInt) {
+		slog.Error("integer setting out of range, using default", "key", k, "value", raw, "default", def, "max", math.MaxInt)
+		return def
+	}
+	return int(v)
 }
 
 func envFloat(k string, def float64) float64 {

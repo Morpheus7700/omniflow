@@ -29,17 +29,20 @@ func NewStore(p *pgxpool.Pool) *Store {
 	return &Store{pool: p}
 }
 
-func (s *Store) LoadOrCreateWorkflow(ctx context.Context, eventID string, traceParent string, seqKey uint64, sortedNodes []string) (*domain.Workflow, error) {
+func (s *Store) LoadOrCreateWorkflow(ctx context.Context, eventID string, traceParent string, seqKey uint64, sortedNodes []string, triggerPayload []byte) (*domain.Workflow, error) {
 	var wf domain.Workflow
 	var ownerPod, leaseExpiresAt *string
+	// trigger_payload is stored on creation and read back on every load. Node execution happens
+	// outside the transaction, so a pod that resumes a half-executed workflow was NOT the pod that
+	// consumed the Kafka record and cannot recover the node's input any other way.
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO workflows (event_id, trace_parent, sequence_engine_key, state, current_node_index, sorted_nodes)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO workflows (event_id, trace_parent, sequence_engine_key, state, current_node_index, sorted_nodes, trigger_payload)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (event_id) DO UPDATE SET event_id = workflows.event_id
-		RETURNING id, event_id, trace_parent, sequence_engine_key, state, current_node_index, sorted_nodes, owner_pod, lease_expires_at::text
-	`, eventID, traceParent, seqKey, string(domain.StatePending), 0, sortedNodes).Scan(
+		RETURNING id, event_id, trace_parent, sequence_engine_key, state, current_node_index, sorted_nodes, owner_pod, lease_expires_at::text, trigger_payload
+	`, eventID, traceParent, seqKey, string(domain.StatePending), 0, sortedNodes, triggerPayload).Scan(
 		&wf.ID, &wf.EventID, &wf.TraceParent, &wf.SequenceEngineKey, &wf.State,
-		&wf.CurrentNodeIndex, &wf.SortedNodes, &ownerPod, &leaseExpiresAt,
+		&wf.CurrentNodeIndex, &wf.SortedNodes, &ownerPod, &leaseExpiresAt, &wf.TriggerPayload,
 	)
 	if err != nil {
 		return nil, err
@@ -51,7 +54,7 @@ func (s *Store) LoadOrCreateWorkflow(ctx context.Context, eventID string, traceP
 }
 
 const loadWorkflowByEventIDSQL = `
-	SELECT id, event_id, trace_parent, sequence_engine_key, state, current_node_index, sorted_nodes, owner_pod, lease_expires_at::text
+	SELECT id, event_id, trace_parent, sequence_engine_key, state, current_node_index, sorted_nodes, owner_pod, lease_expires_at::text, trigger_payload
 	FROM workflows WHERE event_id = $1`
 
 // scanWorkflow decodes one workflows row. Shared so the pool-scoped and tx-scoped loaders cannot
@@ -61,7 +64,7 @@ func scanWorkflow(row pgx.Row) (*domain.Workflow, error) {
 	var ownerPod, leaseExpiresAt *string
 	err := row.Scan(
 		&wf.ID, &wf.EventID, &wf.TraceParent, &wf.SequenceEngineKey, &wf.State,
-		&wf.CurrentNodeIndex, &wf.SortedNodes, &ownerPod, &leaseExpiresAt,
+		&wf.CurrentNodeIndex, &wf.SortedNodes, &ownerPod, &leaseExpiresAt, &wf.TriggerPayload,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -146,8 +149,20 @@ func (s *Store) CheckIdempotency(ctx context.Context, workflowID, nodeID string,
 	return exists, classify(err)
 }
 
+// SaveCheckpoint records a generic node transition. Equivalent to SaveCheckpointTyped with an
+// event_type of "NodeTransition", which is what this always emitted.
 func (s *Store) SaveCheckpoint(ctx context.Context, tx ports.Transaction, wf *domain.Workflow, nodeID string, attempt int, payload []byte) error {
+	return s.SaveCheckpointTyped(ctx, tx, wf, nodeID, attempt, "NodeTransition", payload)
+}
+
+// SaveCheckpointTyped is SaveCheckpoint with a caller-chosen outbox event_type, so a node that
+// produced a real domain event (a drafted purchase order, say) emits it under its own name rather
+// than as an anonymous node transition. The exactly-once CTE below is unchanged.
+func (s *Store) SaveCheckpointTyped(ctx context.Context, tx ports.Transaction, wf *domain.Workflow, nodeID string, attempt int, eventType string, payload []byte) error {
 	ptx := tx.(*txWrapper).tx
+	if eventType == "" {
+		eventType = "NodeTransition"
+	}
 
 	var leaseParam interface{} = wf.LeaseExpiresAt
 	if wf.LeaseExpiresAt.IsZero() {
@@ -192,10 +207,10 @@ func (s *Store) SaveCheckpoint(ctx context.Context, tx ports.Transaction, wf *do
 				RETURNING 1
 			)
 			INSERT INTO orchestrator_outbox (aggregate_id, event_type, trace_parent, payload, sequence_engine_key)
-			SELECT $11, 'NodeTransition', $8, $9, $10   -- $11, not $5: aggregate_id is STRING
+			SELECT $11, $12, $8, $9, $10   -- $11, not $5: aggregate_id is STRING
 			WHERE EXISTS (SELECT 1 FROM insert_ledger)
-		`, wf.State, wf.CurrentNodeIndex, podParam, leaseParam, wf.ID, nodeID, attempt, wf.TraceParent, payload, wf.SequenceEngineKey, wf.ID)
-		return err
+		`, wf.State, wf.CurrentNodeIndex, podParam, leaseParam, wf.ID, nodeID, attempt, wf.TraceParent, payload, wf.SequenceEngineKey, wf.ID, eventType)
+		return classify(err)
 	} else if nodeID != "" {
 		_, err := ptx.Exec(ctx, `
 			WITH update_wf AS (

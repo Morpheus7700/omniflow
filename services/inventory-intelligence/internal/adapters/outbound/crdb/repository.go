@@ -4,12 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 
+	"omniflow/internal/platform/errclass"
 	"omniflow/services/inventory-intelligence/internal/core/domain"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 )
@@ -22,26 +21,23 @@ func NewRepository(db *pgxpool.Pool) *Repository {
 	return &Repository{db: db}
 }
 
+// wrapError maps a driver error onto this service's domain sentinels.
+//
+// The SQLSTATE taxonomy now lives in internal/platform/errclass so that all three services agree
+// on it. This function had the most complete classifier of the three and was the model for that
+// package; it keeps its own sentinels because the domain cores are deliberately not coupled.
 func wrapError(err error) error {
 	if err == nil {
 		return nil
 	}
-
-	var netErr net.Error
-	if errors.As(err, &netErr) {
+	switch errclass.Classify(err) {
+	case errclass.Transient:
 		return fmt.Errorf("%w: %v", domain.ErrTransient, err)
+	case errclass.Terminal:
+		return fmt.Errorf("%w: %v", domain.ErrTerminal, err)
+	default:
+		return err
 	}
-
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
-		// 40001 = serialization_failure
-		// 08* = connection exceptions
-		if pgErr.Code == "40001" || pgErr.Code == "08000" || pgErr.Code == "08003" || pgErr.Code == "08006" {
-			return fmt.Errorf("%w: %v", domain.ErrTransient, err)
-		}
-	}
-
-	return err
 }
 
 func (r *Repository) ProcessInventoryTransaction(

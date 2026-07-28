@@ -45,9 +45,21 @@ func NewConsumer(client *kgo.Client, svc *domain.ValuationService) (*Consumer, e
 	}, nil
 }
 
+const (
+	maxTransientRetries = 5
+	initialBackoff      = 100 * time.Millisecond
+)
+
 func (c *Consumer) Start(ctx context.Context) {
 	for {
 		fetches := c.client.PollFetches(ctx)
+		// PollFetches returns a fetch wrapping ctx.Err() on cancellation, and IsClientClosed is
+		// false for that case. Without this check SIGTERM turns the loop into a hot spin that
+		// logs "context canceled" at full CPU and never returns, so the caller's graceful
+		// shutdown is unreachable and the process has to be SIGKILLed.
+		if ctx.Err() != nil {
+			return
+		}
 		if fetches.IsClientClosed() {
 			return
 		}
@@ -57,22 +69,80 @@ func (c *Consumer) Start(ctx context.Context) {
 		})
 
 		fetches.EachRecord(func(record *kgo.Record) {
-			err := c.processRecord(ctx, record)
-			switch {
-			case err == nil:
-				c.client.MarkCommitRecords(record)
-			case errors.Is(err, domain.ErrTransient):
-				slog.Warn("transient error, skipping commit", "error", err)
-				return // no commit -> redelivered
-			default:
-				slog.Error("terminal error, routing to DLQ", "error", err)
-				if e := c.produceToDLQConfirmed(ctx, record, err); e != nil {
-					return // block on delivery report; don't commit if it failed
-				}
-				c.client.MarkCommitRecords(record)
-			}
+			c.processRecordWithRetry(ctx, record)
 		})
 	}
+}
+
+// processRecordWithRetry mirrors the bounded-retry ladder in commbot and p2p-orchestrator.
+//
+// It replaces an earlier shape that returned from the EachRecord closure on a transient error
+// under the comment "no commit -> redelivered". That comment described Kafka semantics this code
+// does not have: not committing does not rewind franz-go's in-session consume cursor, so the
+// failed record was never retried and the *next* record was processed instead — a silent drop
+// that also broke per-partition ordering. Retrying in place is what actually redelivers.
+func (c *Consumer) processRecordWithRetry(ctx context.Context, record *kgo.Record) {
+	backoff := initialBackoff
+	var err error
+
+	for attempt := 1; attempt <= maxTransientRetries; attempt++ {
+		err = c.processRecord(ctx, record)
+		switch {
+		case err == nil:
+			c.commit(ctx, record)
+			return
+
+		case errors.Is(err, domain.ErrTerminal):
+			c.deadLetter(ctx, record, err)
+			return
+
+		case errors.Is(err, domain.ErrTransient):
+			slog.Warn("transient error, retrying in place",
+				"error", err, "attempt", attempt, "max_attempts", maxTransientRetries,
+				"topic", record.Topic, "partition", record.Partition, "offset", record.Offset)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			backoff *= 2
+
+		default:
+			// Unclassified. Fail closed, matching commbot and errclass.Unknown: an error we
+			// cannot name is an error whose retry cost we cannot bound, and retrying it blocks
+			// the partition while producing no new information.
+			c.deadLetter(ctx, record, fmt.Errorf("unclassified error (defaulting terminal): %w", err))
+			return
+		}
+	}
+
+	c.deadLetter(ctx, record, fmt.Errorf("transient retries exhausted after %d attempts: %w", maxTransientRetries, err))
+}
+
+// commit synchronously commits the record's offset.
+//
+// This was previously MarkCommitRecords, which franz-go documents as a no-op unless the client was
+// built with kgo.AutoCommitMarks() — and this client is built with kgo.DisableAutoCommit(), which
+// config.go makes mutually exclusive with it. The result was that this service committed ZERO
+// offsets for its entire lifetime and replayed the whole topic on every restart. The consumer-side
+// processed_events idempotency table absorbed the duplicates, which is precisely why it went
+// unnoticed. CommitRecords is what commbot and p2p-orchestrator already use.
+func (c *Consumer) commit(ctx context.Context, record *kgo.Record) {
+	if err := c.client.CommitRecords(ctx, record); err != nil {
+		slog.Error("offset commit failed", "error", err,
+			"topic", record.Topic, "partition", record.Partition, "offset", record.Offset)
+	}
+}
+
+// deadLetter publishes to the DLQ and commits the source offset ONLY after delivery is confirmed.
+// A failed produce plus a committed offset is permanent data loss.
+func (c *Consumer) deadLetter(ctx context.Context, record *kgo.Record, cause error) {
+	slog.Error("routing to DLQ", "error", cause,
+		"topic", record.Topic, "partition", record.Partition, "offset", record.Offset)
+	if err := c.produceToDLQConfirmed(ctx, record, cause); err != nil {
+		return // do not commit; the record will be redelivered to a future member
+	}
+	c.commit(ctx, record)
 }
 
 func (c *Consumer) processRecord(ctx context.Context, record *kgo.Record) error {
@@ -97,19 +167,29 @@ func (c *Consumer) processRecord(ctx context.Context, record *kgo.Record) error 
 
 func (c *Consumer) produceToDLQConfirmed(ctx context.Context, record *kgo.Record, err error) error {
 	dlqRecord := &kgo.Record{
-		Topic: record.Topic + ".dlq",
-		Key:   record.Key,
-		Value: record.Value,
-		Headers: append(record.Headers, kgo.RecordHeader{
-			Key:   "error",
-			Value: []byte(err.Error()),
-		}),
+		Topic:   record.Topic + ".dlq",
+		Key:     record.Key,
+		Value:   record.Value,
+		Headers: dlqHeaders(record, err),
 	}
 	if e := c.client.ProduceSync(ctx, dlqRecord).FirstErr(); e != nil {
 		slog.Error("failed to produce to DLQ", "error", e)
 		return e
 	}
 	return nil
+}
+
+// dlqHeaders copies the source headers rather than appending to them in place. append() on a slice
+// we do not own can write into franz-go's backing array when it has spare capacity, corrupting a
+// record we are about to hand back to the client. source_topic makes a DLQ record routable by a
+// re-drive tool without having to guess its wire format from the error string.
+func dlqHeaders(record *kgo.Record, cause error) []kgo.RecordHeader {
+	headers := make([]kgo.RecordHeader, 0, len(record.Headers)+2)
+	headers = append(headers, record.Headers...)
+	return append(headers,
+		kgo.RecordHeader{Key: "error", Value: []byte(cause.Error())},
+		kgo.RecordHeader{Key: "source_topic", Value: []byte(record.Topic)},
+	)
 }
 
 func mapToDomain(pb *inventoryv1.InventoryMovementReceived) (*domain.InventoryMovementReceived, error) {

@@ -41,13 +41,15 @@ TOPICS=(
   "omniflow.communication.v1.dlq"
 
   # commbot_outbox changefeed -> p2p-orchestrator, + the orchestrator's dead-letter sink
-  # (note: the orchestrator routes ALL its failures here, including ones consumed from
-  #  omniflow.p2p.approval.v1 — see routeToDLQ in its consumer)
   "omniflow.orchestration.v1"
   "omniflow.orchestration.v1.dlq"
 
-  # Human-in-the-loop approval: produced by the seeder, consumed by p2p-orchestrator to resume the DAG
+  # Human-in-the-loop approval: produced by the seeder, consumed by p2p-orchestrator to resume the DAG.
+  # Its own dead-letter sink: the orchestrator consumes two topics carrying two different wire
+  # formats (JSON changefeed envelope here, bare protobuf there), so they cannot share a DLQ —
+  # a re-drive tool would have no way to know how to decode a given record.
   "omniflow.p2p.approval.v1"
+  "omniflow.p2p.approval.v1.dlq"
 
   # orchestrator_outbox changefeed -> viz-gateway
   "omniflow.p2p.completed.v1"

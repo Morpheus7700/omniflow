@@ -110,11 +110,26 @@ func (po *PurchaseOrderEffect) Validate() error {
 
 // TotalMicroUSD renders the total in micro-USD for the governance ceiling check. Truncation is
 // toward zero, which cannot push a PO under a ceiling by more than a rounding unit.
+//
+// Saturates at MaxUint64 rather than converting blindly. IntPart() returns int64 and is documented
+// to be meaningless if the value does not fit, so a sufficiently absurd model-supplied total would
+// otherwise wrap to a SMALL number — and a small number sails under the autonomous-approval
+// ceiling. An overflow here would turn the largest imaginable purchase order into one that needs no
+// human. Saturating fails in the safe direction: the ceiling is exceeded, a human is required.
 func (po *PurchaseOrderEffect) TotalMicroUSD() uint64 {
 	if po.TotalAmount.IsNegative() {
 		return 0
 	}
-	return uint64(po.TotalAmount.Mul(decimal.NewFromInt(1_000_000)).IntPart())
+	micro := po.TotalAmount.Mul(decimal.NewFromInt(1_000_000))
+	if micro.GreaterThan(decimal.NewFromUint64(^uint64(0))) {
+		return ^uint64(0)
+	}
+	part := micro.IntPart()
+	if part < 0 {
+		// Defensive: only reachable if the GreaterThan guard above is ever weakened.
+		return ^uint64(0)
+	}
+	return uint64(part)
 }
 
 // DeterministicPONumber derives a PO number from the idempotency triple, so a re-executed node

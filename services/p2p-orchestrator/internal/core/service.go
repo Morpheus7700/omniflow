@@ -305,7 +305,9 @@ func (s *OrchestratorService) drainWorkflow(ctx context.Context, wf *domain.Work
 		if result != nil && result.Effect != nil {
 			inserted, err := s.store.InsertPurchaseOrder(ctx, tx, wf.ID, nodeID, attempt, result.Effect)
 			if err != nil {
-				tx.Rollback(ctx)
+				if rbErr := tx.Rollback(ctx); rbErr != nil {
+					log.Warn("rollback after failed purchase order insert", "node", nodeID, "error", rbErr)
+				}
 				log.Error("persisting purchase order failed", "node", nodeID, "error", err)
 				return err
 			}

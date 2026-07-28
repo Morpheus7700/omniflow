@@ -123,6 +123,21 @@ func TestValidateAcceptsHighPrecisionArithmetic(t *testing.T) {
 	}
 }
 
+// An overflow here would wrap a colossal total down to a small number, which would sail under the
+// autonomous-approval ceiling — the largest imaginable PO becoming the one that needs no human.
+// Saturating fails in the safe direction.
+func TestTotalMicroUSDSaturatesInsteadOfWrapping(t *testing.T) {
+	po := &PurchaseOrderEffect{TotalAmount: d("99999999999999999999999999")}
+	got := po.TotalMicroUSD()
+	if got != ^uint64(0) {
+		t.Fatalf("TotalMicroUSD() = %d, want saturation to MaxUint64", got)
+	}
+	// And the point of saturating: it must still be above any plausible ceiling.
+	if got < 50_000_000_000 {
+		t.Error("saturated value fell under the autonomous ceiling; overflow would skip human approval")
+	}
+}
+
 func TestTotalMicroUSD(t *testing.T) {
 	for _, tc := range []struct {
 		total string

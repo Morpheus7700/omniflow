@@ -85,7 +85,7 @@ func main() {
 		MaxCostPerWorkflowMicroUSD: envUint("AGENT_MAX_COST_PER_WORKFLOW_MICRO_USD", 500_000),     // $0.50
 		MaxEstimatedCallMicroUSD:   envUint("AGENT_MAX_CALL_MICRO_USD", 100_000),                  // $0.10
 		AutonomousCeilingMicroUSD:  envUint("AGENT_AUTONOMOUS_CEILING_MICRO_USD", 50_000_000_000), // $50,000
-	}, envFloat("AGENT_RATE_RPS", 2), int(envUint("AGENT_RATE_BURST", 4)))
+	}, envFloat("AGENT_RATE_RPS", 2), envRateBurst())
 
 	drafter := agent.NewPODrafter(litellmURL, os.Getenv("LITELLM_KEY"), agentModel, guard, store)
 
@@ -142,7 +142,13 @@ func main() {
 
 	slog.Info("Shutting down orchestrator gracefully...")
 	cancel()
-	srv.Shutdown(context.Background())
+	// Bounded, and the error is reported. An unbounded Shutdown can hang forever on one stuck
+	// connection, which turns a graceful stop into a killed pod.
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		slog.Error("health server shutdown", "error", err)
+	}
 
 	wg.Wait()
 }
@@ -189,4 +195,19 @@ func envFloat(k string, def float64) float64 {
 		return def
 	}
 	return v
+}
+
+// envRateBurst reads the limiter burst as an int without an unchecked narrowing conversion.
+//
+// rate.NewLimiter takes an int, and on a 32-bit build a uint64 above MaxInt wraps NEGATIVE — a
+// negative burst makes the limiter reject every call, so the drafting agent would refuse all work
+// while reporting a healthy startup. Clamped to a sane ceiling instead.
+func envRateBurst() int {
+	const maxBurst = 1 << 20
+	v := envUint("AGENT_RATE_BURST", 4)
+	if v > maxBurst {
+		slog.Warn("AGENT_RATE_BURST above the permitted ceiling, clamping", "value", v, "ceiling", maxBurst)
+		return maxBurst
+	}
+	return int(v)
 }

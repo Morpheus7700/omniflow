@@ -78,7 +78,15 @@ SEED_OUT=$(SEED_ACTION=suspend-only go run ./tools/seed)
 echo "$SEED_OUT"
 
 export SEED_EVENT_ID=$(echo "$SEED_OUT" | grep SEED_EVENT_ID= | cut -d= -f2)
-[[ -n "$SEED_EVENT_ID" ]] || { echo "FAIL: no SEED_EVENT_ID in seed output"; exit 1; }
+# SEED_SEQUENCE_ENGINE_KEY is REQUIRED by the approve-only seed further down: it produces the
+# HumanApprovalEvent carrying the same HLC key, and the seeder refuses to guess it. Omitting this
+# export is why the first run of this test died at the approval step having already proved the
+# interesting half.
+export SEED_SEQUENCE_ENGINE_KEY=$(echo "$SEED_OUT" | grep SEED_SEQUENCE_ENGINE_KEY= | cut -d= -f2)
+if [[ -z "$SEED_EVENT_ID" || -z "$SEED_SEQUENCE_ENGINE_KEY" ]]; then
+    echo "FAIL: could not extract seed keys (event_id='${SEED_EVENT_ID}' seq_key='${SEED_SEQUENCE_ENGINE_KEY}')"
+    exit 1
+fi
 
 # The workflow suspends at human_approval, which is AFTER draft_po — so reaching SUSPENDED proves
 # the agent node already ran and produced its purchase order.

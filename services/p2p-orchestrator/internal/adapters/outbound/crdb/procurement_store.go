@@ -98,8 +98,32 @@ func (s *Store) RecordDecision(ctx context.Context, d aigov.Decision, attempt in
 	`,
 		d.ID, d.WorkflowID, d.NodeID, attempt, d.AgentID, d.Model,
 		d.PromptSHA256, d.Prompt, d.RawResponse,
-		int32(d.PromptTokens), int32(d.CompletionTokens), int64(d.CostMicroUSD), d.LatencyMS,
+		// Clamped, not cast. The columns are INT4/INT8 (signed) while the provider reports unsigned
+		// counts, so a hostile or broken gateway returning a value above the signed maximum would
+		// otherwise wrap NEGATIVE. A negative cost is worse than a wrong one: SpentMicroUSD sums
+		// this column to enforce the budget, so one negative row would credit the workflow spend
+		// and let it exceed its cap. Clamping keeps the sum monotonic.
+		clampInt32(d.PromptTokens), clampInt32(d.CompletionTokens), clampInt64(d.CostMicroUSD), d.LatencyMS,
 		string(d.Outcome), d.RejectReason, d.CreatedAt,
 	)
 	return classify(err)
+}
+
+// clampInt32 narrows a uint32 to the INT4 column width without wrapping.
+func clampInt32(v uint32) int32 {
+	const maxInt32 = 1<<31 - 1
+	if v > maxInt32 {
+		return maxInt32
+	}
+	return int32(v)
+}
+
+// clampInt64 narrows a uint64 to the INT8 column width without wrapping. See the note at the call
+// site: a wrapped negative cost would corrupt budget enforcement, not merely the audit record.
+func clampInt64(v uint64) int64 {
+	const maxInt64 = 1<<63 - 1
+	if v > maxInt64 {
+		return maxInt64
+	}
+	return int64(v)
 }

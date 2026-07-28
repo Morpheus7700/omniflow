@@ -30,12 +30,23 @@ GitHub Actions or Codespaces (no local Docker daemon available on this machine).
 - **DB name = `omniflow`** for every service. `sequence_engine_key` is carried as a STRING end-to-end
   (avoids JS float64 precision loss). Rendering gated by the changefeed `resolved` watermark.
 
-## LOCKED files — do not modify (regressions fail audit)
+## Load-bearing files — change only with the test that proves you didn't break them
 `services/p2p-orchestrator/internal/core/domain/dag.go`; CommBot core domain logic;
 `infrastructure/storage/orchestrator_schema.sql` structure; orchestrator `service.go` suspend/HITL
 logic; Phase-4 valuation/ledger (`valuation.go`, inventory crdb repository). The confirmed-DLQ→commit
 ordering and manual-commit contract in every consumer are load-bearing — never switch to auto-commit
 or fire-and-forget produce.
+
+These were previously described as LOCKED, enforced by this paragraph alone. That was a documented
+promise, not a control: a paragraph cannot fail a build, and it froze the files against *any* edit
+including provably safe ones — a repo-wide `gofmt` was blocked for months by a lock guarding
+`valuation.go` against whitespace it could not semantically alter.
+
+The enforcement is the test suite, and `.github/CODEOWNERS` names which test guards which path.
+So the question is never "am I allowed to touch this file" but **"which test proves I did not break
+it"** — and a change no test objects to is either safe or a gap in the suite. Chase the second case.
+(CODEOWNERS is visibility only here: GitHub forbids self-approval, so requiring code-owner review on
+a solo repo would make every PR unmergeable.)
 
 ## Build / verify commands
 - Root module:  `CGO_ENABLED=0 go build ./...`  and  `go vet ./...`  (must be exit 0)

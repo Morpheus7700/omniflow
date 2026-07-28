@@ -17,7 +17,7 @@ const (
 )
 
 type SSEEvent struct {
-	ID   string    // sequence_engine_key or resolved_ts as string
+	ID   string // sequence_engine_key or resolved_ts as string
 	Type EventType
 	Data any
 }

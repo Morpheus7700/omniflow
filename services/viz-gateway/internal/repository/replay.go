@@ -36,13 +36,13 @@ func (r *ReplayRepository) GetMovements(ctx context.Context, fromSeq, toSeq uint
 		if err := rows.Scan(&e.AggregateID, &e.TraceParent, &seqKey, &stateStr); err != nil {
 			return nil, err
 		}
-		
+
 		e.SequenceEngineKey = strconv.FormatUint(seqKey, 10)
 		e.Stage = domain.VisualizationStage(stateStr) // Real stage
-		e.Status = "SUCCESS" // Or logic based on state
+		e.Status = "SUCCESS"                          // Or logic based on state
 		events = append(events, e)
 	}
-	
+
 	if events == nil {
 		events = []domain.ProjectionEvent{}
 	}

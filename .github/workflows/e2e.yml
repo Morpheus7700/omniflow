@@ -40,6 +40,19 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: '1.25'
+      # Formatting is a gate, not a suggestion. It is checked before anything else because it is the
+      # cheapest possible signal and because an unformatted tree is how "we have standards" quietly
+      # becomes "we had standards". gofmt is semantics-preserving by construction, so this can never
+      # fail for a reason that is really a behaviour change.
+      - name: gofmt (both modules)
+        run: |
+          unformatted="$(gofmt -l ./services ./tools ./contracts)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::These files are not gofmt-clean:"
+            echo "$unformatted"
+            echo "Run: gofmt -w ./services ./tools ./contracts"
+            exit 1
+          fi
       # Unit tests need no Docker and no services — they run on every push in seconds. The
       # testcontainers suite is excluded here by its `integration` build tag (see the job below).
       - name: root module

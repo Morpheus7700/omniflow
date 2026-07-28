@@ -1,0 +1,8 @@
+# Keeps frontend/public/ tracked while it holds no assets.
+#
+# git does not track empty directories. When the stock create-next-app SVGs were deleted this
+# directory vanished from the tree, and `COPY --from=builder /app/public ./public` in
+# frontend/Dockerfile then failed with "/app/public: not found" — which fails the frontend image,
+# which fails `compose up --build`, which takes down ALL FIVE boot jobs at once.
+#
+# Delete this file only if the COPY in frontend/Dockerfile goes with it.

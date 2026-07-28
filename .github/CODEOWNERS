@@ -1,0 +1,42 @@
+# Ownership for the files whose behaviour the architecture actually rests on.
+#
+# READ THIS BEFORE ASSUMING IT IS ENFORCEMENT. On a solo-maintained repository CODEOWNERS cannot
+# gate anything: GitHub does not let you approve your own pull request, so turning on "require
+# review from Code Owners" would make every PR permanently unmergeable. What this file does buy is
+# visibility — GitHub labels the owned paths in the PR "Files changed" view, so a diff that touches
+# load-bearing code announces itself instead of blending into the noise.
+#
+# The REAL enforcement for these paths is the test suite, and that distinction matters:
+#
+#   dag.go                  -> dag_test.go (Kahn determinism over 50 randomised runs, cycle detection)
+#   valuation.go            -> valuation_test.go (FIFO depletion, moving average, late-arrival restatement)
+#   crdb repository         -> repository_integration_test.go (real CockroachDB, single-transaction atomicity)
+#   orchestrator service.go -> failtest_killed_pod.sh + failtest_exactly_once.sh
+#   consumer DLQ ordering   -> failtest_dlq_poison.sh (wire AND semantic poison pills)
+#
+# If you are about to change something here, the question is not "am I allowed to touch this file",
+# it is "which of those tests proves I did not break it". A change that no test objects to is either
+# safe or a gap in the suite — and the second case is the one worth chasing.
+
+*                                                                   @Morpheus7700
+
+# ── Orchestration core: DAG topology and the human-in-the-loop suspend/resume contract ──
+/services/p2p-orchestrator/internal/core/domain/dag.go              @Morpheus7700
+/services/p2p-orchestrator/internal/core/service.go                 @Morpheus7700
+
+# ── Inventory valuation: FIFO lots, moving average, late-arrival restatement ──
+/services/inventory-intelligence/internal/core/domain/valuation.go  @Morpheus7700
+/services/inventory-intelligence/internal/adapters/outbound/crdb/   @Morpheus7700
+
+# ── Consumer delivery semantics: manual commit, confirmed-DLQ-then-commit ordering ──
+# Never switch these to auto-commit or fire-and-forget produce; both silently defeat the
+# no-message-dropped guarantee while every happy-path test stays green.
+/services/commbot/internal/adapters/inbound/kafka/                  @Morpheus7700
+/services/inventory-intelligence/internal/adapters/inbound/kafka/   @Morpheus7700
+
+# ── Schema and event contracts: changing these breaks consumers you cannot see from here ──
+/infrastructure/storage/                                            @Morpheus7700
+/contracts/proto/                                                   @Morpheus7700
+
+# ── CI and dependency surveillance: the gates themselves ──
+/.github/                                                           @Morpheus7700

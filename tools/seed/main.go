@@ -95,7 +95,7 @@ func run() error {
 			return fmt.Errorf("generate event id: %w", err)
 		}
 	}
-	
+
 	var seqKey uint64
 	if s := os.Getenv("SEED_INV_SEQ"); s != "" {
 		if _, err := fmt.Sscanf(s, "%d", &seqKey); err != nil {

@@ -45,8 +45,8 @@ func wrapError(err error) error {
 }
 
 func (r *Repository) ProcessInventoryTransaction(
-	ctx context.Context, 
-	event domain.InventoryMovementReceived, 
+	ctx context.Context,
+	event domain.InventoryMovementReceived,
 	processFn func(ctx context.Context, e domain.InventoryMovementReceived, ledger domain.LedgerAccess) ([]domain.InventoryFact, error),
 ) error {
 	// Single CRDB Transaction
@@ -84,7 +84,7 @@ func (r *Repository) ProcessInventoryTransaction(
 
 	// 4. Write to outbox (fact_inventory_movement, fact_inventory_snapshot)
 	for _, fact := range facts {
-		_, err := tx.Exec(ctx, 
+		_, err := tx.Exec(ctx,
 			`INSERT INTO fact_inventory_movement 
 			(event_id, trace_parent, occurred_at, cdc_emit_ts, sequence_engine_key, sku, mdm_vendor_id, location_id, movement_type, qty_delta, fifo_unit_cost, fifo_total_value, moving_avg_cost) 
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
@@ -109,7 +109,7 @@ func (r *Repository) ProcessInventoryTransaction(
 
 		snapshotDate := fact.OccurredAt.Format("2006-01-02")
 		snapshotID := fact.SKU + "_" + snapshotDate
-		_, err = tx.Exec(ctx, 
+		_, err = tx.Exec(ctx,
 			`UPSERT INTO fact_inventory_snapshot 
 			(snapshot_id, snapshot_date, sku, mdm_vendor_id, location_id, qty_on_hand, fifo_total_value, moving_avg_cost, last_updated_at, sequence_engine_key) 
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
@@ -228,5 +228,3 @@ func (l *TxLedger) GetMovementsFrom(ctx context.Context, sku string, locationID 
 	}
 	return mvmts, rows.Err()
 }
-
-

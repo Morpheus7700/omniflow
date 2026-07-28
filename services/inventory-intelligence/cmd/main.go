@@ -35,7 +35,7 @@ func main() {
 	defer dbpool.Close()
 
 	repo := crdb.NewRepository(dbpool)
-	
+
 	// 2. Setup Core Domain
 	svc := domain.NewValuationService(repo)
 

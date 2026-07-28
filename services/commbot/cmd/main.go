@@ -101,11 +101,11 @@ func run() error {
 
 	slog.Info("commbot starting", "input_topic", cfg.inputTopic, "bootstrap", cfg.kafkaBootstrap)
 	adapter.Start(ctx) // blocks until ctx is cancelled
-	
+
 	sctx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer scancel()
 	_ = srv.Shutdown(sctx)
-	
+
 	slog.Info("commbot stopped cleanly")
 	return nil
 }

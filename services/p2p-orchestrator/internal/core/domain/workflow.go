@@ -18,9 +18,9 @@ type Workflow struct {
 	TraceParent       string
 	SequenceEngineKey uint64
 	State             WorkflowState
-	
+
 	// Pre-computed and persisted Kahn's sort to prevent re-evaluation
-	SortedNodes      []string 
+	SortedNodes      []string
 	CurrentNodeIndex int
 
 	// Durable Lease for Human-In-The-Loop cross-wait ownership

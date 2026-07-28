@@ -149,5 +149,3 @@ func tsOrZero(t *timestamppb.Timestamp) time.Time {
 	}
 	return t.AsTime()
 }
-
-

@@ -13,8 +13,8 @@ import (
 	"omniflow/services/viz-gateway/internal/kafka"
 	"omniflow/services/viz-gateway/internal/repository"
 
-	"github.com/twmb/franz-go/pkg/kgo"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/twmb/franz-go/pkg/kgo"
 )
 
 func main() {
@@ -59,7 +59,7 @@ func main() {
 
 	// 4. Start HTTP Server
 	mux := http.NewServeMux()
-	
+
 	// Middleware for CORS
 	withCORS := func(h http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

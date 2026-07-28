@@ -141,12 +141,12 @@ func (s *ValuationService) restateSKUFrom(ctx context.Context, e InventoryMoveme
 	if err := l.ResetLots(ctx, e.SKU, e.LocationID); err != nil { // rewind
 		return nil, err
 	}
-	
+
 	all, err := l.GetMovementsFrom(ctx, e.SKU, e.LocationID, 0) // full log, HLC order (incl. e)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	var facts []InventoryFact
 	for _, m := range all { // deterministic replay from zero
 		lots, _ := l.GetLots(ctx, m.SKU, m.LocationID)
@@ -158,5 +158,3 @@ func (s *ValuationService) restateSKUFrom(ctx context.Context, e InventoryMoveme
 	}
 	return facts, nil
 }
-
-

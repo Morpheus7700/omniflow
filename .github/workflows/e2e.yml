@@ -36,7 +36,7 @@ jobs:
     name: build + vet + unit tests (both modules)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version: '1.25'
@@ -86,7 +86,7 @@ jobs:
     name: govulncheck (reachable CVEs, gating)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version: '1.25'
@@ -108,7 +108,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15   # container pull + boot should be minutes; a stall must fail fast, not hang
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version: '1.25'
@@ -129,7 +129,7 @@ jobs:
       CRDB_LICENSE: ${{ secrets.CRDB_LICENSE }}
       CRDB_ORG: ${{ secrets.CRDB_ORG }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v7
         with:
@@ -154,7 +154,7 @@ jobs:
       CRDB_LICENSE: ${{ secrets.CRDB_LICENSE }}
       CRDB_ORG: ${{ secrets.CRDB_ORG }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v7
         with:
@@ -173,7 +173,7 @@ jobs:
       CRDB_LICENSE: ${{ secrets.CRDB_LICENSE }}
       CRDB_ORG: ${{ secrets.CRDB_ORG }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v7
         with:
@@ -192,7 +192,7 @@ jobs:
       CRDB_LICENSE: ${{ secrets.CRDB_LICENSE }}
       CRDB_ORG: ${{ secrets.CRDB_ORG }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v7
         with:
@@ -211,7 +211,7 @@ jobs:
       CRDB_LICENSE: ${{ secrets.CRDB_LICENSE }}
       CRDB_ORG: ${{ secrets.CRDB_ORG }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v7
         with:
@@ -231,7 +231,7 @@ jobs:
       contents: read
       security-events: write   # upload SARIF to the repo Security tab (free on public repos)
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version: '1.25'

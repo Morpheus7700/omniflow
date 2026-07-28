@@ -4,8 +4,9 @@
 
 OmniFlow ingests vendor communication, drives a procurement workflow through a durable DAG with a
 human-in-the-loop approval gate, maintains a FIFO / moving-average inventory ledger that survives
-out-of-order events, and streams the whole thing to a 3D timeline in the browser — all over a single
-transactional-outbox → change-data-capture spine, with **no dual writes and no Debezium**.
+out-of-order events, and streams the whole thing to a live settlement ledger in the browser — all
+over a single transactional-outbox → change-data-capture spine, with **no dual writes and no
+Debezium**.
 
 It is a systems-design portfolio piece, not a CRUD app or an LLM wrapper. The emphasis is on the hard
 parts of distributed systems: exactly-once effects, durable resume, ordering under late arrival, and
@@ -28,8 +29,10 @@ proving those properties actually hold by booting the real stack in CI.
   (`sequence_engine_key`). A receipt that arrives *after* a later consumption triggers a **FIFO
   restatement**: the affected SKU is replayed in HLC order and the cost basis is corrected.
 - **Precision-safe end to end.** `sequence_engine_key` is carried as a **STRING** across every hop to
-  avoid JavaScript `float64` precision loss on 64-bit keys; the 3D client orders on the changefeed
-  `resolved` watermark.
+  avoid JavaScript `float64` precision loss on 64-bit keys; the browser client orders on the
+  changefeed `resolved` watermark and draws a **settlement line** at it — records above the line are
+  still in flight, records below it are settled and immutable. Most dashboards simply hide
+  unresolved events; showing both halves *and* the boundary is the point.
 
 ---
 
@@ -65,8 +68,8 @@ proving those properties actually hold by booting the real stack in CI.
                                                               └──────────────────────┘
                                                                          │
                                                               ┌──────────────────────┐
-                                                              │  frontend (Next.js /  │
-                                                              │  React-Three-Fiber)   │
+                                                              │  frontend (Next.js)   │
+                                                              │  settlement ledger    │
                                                               └──────────────────────┘
 ```
 
@@ -78,7 +81,7 @@ proving those properties actually hold by booting the real stack in CI.
 | **p2p-orchestrator** | Go | `omniflow.orchestration.v1`, `omniflow.p2p.approval.v1` | `omniflow.p2p.completed.v1` | `workflows`, `node_execution_ledger`, `orchestrator_outbox` |
 | **inventory-intelligence** | Go | `omniflow.inventory.movement.v1` | `omniflow.inventory.fact_inventory_movement`, `…_snapshot` | `fact_inventory_movement`, `fact_inventory_snapshot` |
 | **viz-gateway** | Go (separate module) | `omniflow.p2p.completed.v1`, `omniflow.inventory.fact_inventory_*` | SSE `/api/stream` | — (read model) |
-| **frontend** | Next.js / R3F | SSE `/api/stream` | 3D timeline | — |
+| **frontend** | Next.js | SSE `/api/stream` | settlement ledger | — |
 
 ### The event spine
 
@@ -240,11 +243,11 @@ services/
   p2p-orchestrator/        DAG workflow engine + HITL
   inventory-intelligence/  FIFO / moving-avg ledger
   viz-gateway/             SSE read model (separate Go module)
-frontend/                  Next.js / React-Three-Fiber 3D timeline
+frontend/                  Next.js settlement-ledger dashboard
 infrastructure/            CRDB schema · crdb-init (changefeeds) · kafka-init (topics)
 tools/                     seed (E2E harness) · mock-llm
-scripts/                   e2e + three failure-survival proofs
-.github/workflows/         CI: build/vet/unit · integration · four boot proofs · security scan
+scripts/                   e2e + four failure-survival proofs
+.github/workflows/         CI: build/vet/unit · integration · five boot proofs · security scan
 docs/                      knowledge base (docs/kb), audits, ADR trail
 ```
 

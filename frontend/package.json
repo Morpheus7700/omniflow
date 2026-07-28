@@ -9,15 +9,9 @@
     "lint": "eslint"
   },
   "dependencies": {
-    "@react-three/drei": "^10.7.7",
-    "@react-three/fiber": "^9.6.1",
-    "@types/three": "^0.185.1",
-    "framer-motion": "^12.42.2",
-    "lucide-react": "^1.25.0",
     "next": "16.2.12",
     "react": "19.2.8",
     "react-dom": "19.2.8",
-    "three": "^0.185.1",
     "zustand": "^5.0.14"
   },
   "devDependencies": {

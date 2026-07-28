@@ -45,11 +45,11 @@ docker-compose.override.yml
 .DS_Store
 Thumbs.db
 
-# ---- Antigravity staging cruft (per STATE.md hygiene note) ----
+# ---- Editor/agent scratch directories ----
 Architecture base */
 **/Architecture base */
-# Antigravity-generated notes vault. Duplicates docs/kb/, which is the canonical one —
-# two vaults claiming to be "the source of truth" is worse than one.
+# A second notes vault that duplicated docs/kb/, which is the canonical one — two vaults each
+# claiming to be "the source of truth" is worse than one.
 /truth/
 
 # ---- Generated protobuf note ----

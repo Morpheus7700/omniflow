@@ -4,16 +4,23 @@ Autonomous Procure-to-Pay & Supply-Chain Orchestrator. Event-driven Go microserv
 piece demonstrating Staff-level distributed-systems judgment. NOT a CRUD app or LLM wrapper.
 
 ## The working loop
-Antigravity (Gemini IDE) is the **builder** (edits files on disk). Claude is the **Principal
-Sentinel/Auditor** — audits from disk each round, patches contained bugs, returns a verdict + a
-redirection prompt the user pastes back to Antigravity. Canonical state: `docs/audit/STATE.md`,
-audit trail: `docs/audit/COMPOSE_PLAN_AUDIT.md`, builder prompts: `docs/antigravity/`.
-Full architecture map: `OMNIFLOW_CONTEXT_FOR_GEMINI.md`.
+Claude is the lead engineer: it edits the code on disk, opens PRs, and audits its own work against
+CI. (Earlier rounds used Antigravity as a separate builder with Claude auditing its output; that
+loop is retired, along with its builder prompts.)
+
+`master` is **branch-protected**: 9 required checks, `strict: true` (branches must be up to date
+before merging), `enforce_admins: true`. There are no direct pushes to `master` — every change goes
+through a PR, including trivial ones. Approvals are not required, so a solo author can self-merge
+once the suite is green; requiring code-owner review would be self-blocking, since GitHub forbids
+self-approval.
+
+Because `strict: true` forces a re-run per merge, prefer batching related changes into one branch
+over many single-file PRs.
 
 ## Start here every session → the knowledge base
-**`docs/kb/INDEX.md`** is an Obsidian-style vault for both Claude and Antigravity — read it first to
-restore context cheaply instead of re-deriving from code. `docs/kb/05-gotchas.md` is the highest-value
-note (the recurring bugs); read it before editing scripts, consumers, or schema.
+**`docs/kb/INDEX.md`** is an Obsidian-style vault — read it first to restore context cheaply instead
+of re-deriving from code. `docs/kb/05-gotchas.md` is the highest-value note (the recurring bugs);
+read it before editing scripts, consumers, or schema. Architecture decisions live in `docs/adr/`.
 
 ## Current mandate — "Make It Real"
 Prove the existing core RUNS end-to-end and SURVIVES failure. STOP adding blueprint surface
@@ -54,11 +61,13 @@ a solo repo would make every PR unmergeable.)
 - Stack (CI only):  `docker compose up`  — runs license-free (single-node CRDB v24.3+ needs no key,
   changefeeds included). `CRDB_LICENSE`/`CRDB_ORG` are OPTIONAL env, only for a multi-node cluster;
   crdb-init + scripts + CI run without them and fail loudly if a key is ever actually required.
-  Kafka image = JVM `apache/kafka:3.8.0` (NOT kafka-native — no JRE for the healthcheck).
-- The Sentinel change-watcher (`scratchpad/omniflow-watch.sh`) polls the tree every 10s and only
-  wakes Claude when files actually change — never poll from the model itself.
+  Kafka image = the **JVM** `apache/kafka` image, never `kafka-native`: the GraalVM native image
+  ships no JRE, so the `kafka-broker-api-versions.sh` healthcheck cannot run and the stack hangs
+  waiting for a broker that never reports healthy. (Pinned version lives in `docker-compose.yml`;
+  Dependabot bumps it.)
 
 ## Repo facts
-Two Go modules: root `omniflow` (go 1.25) + `services/viz-gateway` (go 1.25). `git init`'d, baseline
-commit `388cc35`; the audit loop reads Antigravity's edits via `git status`/`git diff` and never
-commits (leaves diffs for the user to review).
+Two Go modules: root `omniflow` (go 1.25) + `services/viz-gateway` (go 1.25). Shared, non-domain
+helpers live under `internal/platform/` in the root module — `errclass` holds the one SQLSTATE
+taxonomy all three root-module services classify against. viz-gateway is a separate module and
+cannot import it.

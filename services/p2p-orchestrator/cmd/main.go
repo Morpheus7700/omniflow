@@ -9,13 +9,17 @@ import (
 	"sync"
 	"syscall"
 
+	"omniflow/internal/platform/aigov"
 	"omniflow/services/p2p-orchestrator/internal/adapters/inbound/kafka"
+	"omniflow/services/p2p-orchestrator/internal/adapters/outbound/agent"
 	"omniflow/services/p2p-orchestrator/internal/adapters/outbound/crdb"
 	"omniflow/services/p2p-orchestrator/internal/core"
 	"omniflow/services/p2p-orchestrator/internal/core/domain"
+	"omniflow/services/p2p-orchestrator/internal/core/ports"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"strconv"
 	"strings"
 	"time"
 
@@ -58,14 +62,36 @@ func main() {
 
 	store := crdb.NewStore(pool)
 
+	// The procurement DAG. draft_po runs BEFORE the approval gate, which is the whole point: a
+	// human is asked to approve a concrete purchase order the agent has already drafted, not an
+	// abstract intent to buy something.
 	dag := &domain.DAG{
 		Nodes: map[string]*domain.Node{
-			"human_approval": {ID: "human_approval", Dependencies: []string{}},
+			"draft_po":       {ID: "draft_po", Dependencies: []string{}},
+			"human_approval": {ID: "human_approval", Dependencies: []string{"draft_po"}},
 			"final_step":     {ID: "final_step", Dependencies: []string{"human_approval"}},
 		},
 	}
 
-	svc := core.NewOrchestratorService(store, dag)
+	// Governance policy for the agent fleet. Every value is a refusal threshold, and a zero policy
+	// denies everything — an unconfigured agent must not be an unbounded one.
+	guard := aigov.NewGuard(aigov.Policy{
+		AllowedModels: map[string]aigov.CostModel{
+			agentModel: {
+				PromptMicroUSDPer1K:     envUint("AGENT_PROMPT_COST_PER_1K", 100),
+				CompletionMicroUSDPer1K: envUint("AGENT_COMPLETION_COST_PER_1K", 400),
+			},
+		},
+		MaxCostPerWorkflowMicroUSD: envUint("AGENT_MAX_COST_PER_WORKFLOW_MICRO_USD", 500_000),     // $0.50
+		MaxEstimatedCallMicroUSD:   envUint("AGENT_MAX_CALL_MICRO_USD", 100_000),                  // $0.10
+		AutonomousCeilingMicroUSD:  envUint("AGENT_AUTONOMOUS_CEILING_MICRO_USD", 50_000_000_000), // $50,000
+	}, envFloat("AGENT_RATE_RPS", 2), int(envUint("AGENT_RATE_BURST", 4)))
+
+	drafter := agent.NewPODrafter(litellmURL, os.Getenv("LITELLM_KEY"), agentModel, guard, store)
+
+	svc := core.NewOrchestratorService(store, dag, map[string]ports.NodeExecutor{
+		"draft_po": drafter,
+	})
 
 	// 3. Init Kafka
 	brokers := os.Getenv("KAFKA_BROKERS")
@@ -119,4 +145,48 @@ func main() {
 	srv.Shutdown(context.Background())
 
 	wg.Wait()
+}
+
+// agentModel is the model the drafting agent is permitted to call. It is also the ONLY key in the
+// governance allowlist, so changing it here without pricing it there makes every call refuse —
+// which is the correct failure direction for a component that spends money.
+var agentModel = env("AGENT_MODEL", "gemini-2.5-flash")
+
+// litellmURL is resolved once at startup; the agent shares the gateway CommBot uses.
+var litellmURL = env("LITELLM_URL", "http://mock-llm:4000")
+
+func env(k, def string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return def
+}
+
+// envUint reads an unsigned governance threshold. A malformed value falls back to the default and
+// says so loudly rather than silently becoming zero — a zero ceiling would refuse every call, and a
+// silent zero budget is indistinguishable from a broken agent.
+func envUint(k string, def uint64) uint64 {
+	raw := os.Getenv(k)
+	if raw == "" {
+		return def
+	}
+	v, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		slog.Error("invalid governance threshold, using default", "key", k, "value", raw, "default", def, "error", err)
+		return def
+	}
+	return v
+}
+
+func envFloat(k string, def float64) float64 {
+	raw := os.Getenv(k)
+	if raw == "" {
+		return def
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		slog.Error("invalid rate setting, using default", "key", k, "value", raw, "default", def, "error", err)
+		return def
+	}
+	return v
 }

@@ -33,6 +33,10 @@ echo "Applying pure DDL schema files..."
 $CRDB -d omniflow -f /infrastructure/crdb_schema.sql
 $CRDB -d omniflow -f /infrastructure/storage/orchestrator_schema.sql
 $CRDB -d omniflow -f /infrastructure/storage/commbot_outbox_schema.sql
+# MUST come after orchestrator_schema.sql: purchase_orders references workflows(id), and this file
+# also adds the trigger_payload column that makes a workflow resumable by a pod that did not consume
+# its originating Kafka record.
+$CRDB -d omniflow -f /infrastructure/storage/procurement_schema.sql
 
 # Idempotently create a changefeed only if no running/pending job already targets it.
 # SHOW CHANGEFEED JOBS exposes `description` (the full CREATE statement) + `status`; there is NO

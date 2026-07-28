@@ -125,9 +125,23 @@ services:
     depends_on:
       crdb-init:
         condition: service_completed_successfully
+      mock-llm:
+        condition: service_started
     environment:
       CRDB_DSN: "postgres://root@cockroachdb:26257/omniflow?sslmode=disable"
       KAFKA_BROKERS: "kafka:29092"
+      # The drafting agent shares the gateway CommBot uses. In CI that is mock-llm, which returns a
+      # canned purchase order; MOCK_LLM_PO_MODE on that service drives the rejection branches.
+      LITELLM_URL: "http://mock-llm:4000"
+      AGENT_MODEL: "gemini-2.5-flash"
+      # Governance ceilings. These are refusal thresholds, not targets — and they are deliberately
+      # explicit here rather than left to code defaults, because an operator changing what an
+      # autonomous agent may spend should be editing config they can see, not recompiling.
+      AGENT_MAX_COST_PER_WORKFLOW_MICRO_USD: "500000"      # $0.50 of model spend per workflow
+      AGENT_MAX_CALL_MICRO_USD: "100000"                   # $0.10 worst case for any single call
+      AGENT_AUTONOMOUS_CEILING_MICRO_USD: "50000000000"    # $50,000 PO value needs a human
+      AGENT_RATE_RPS: "2"
+      AGENT_RATE_BURST: "4"
 
   viz-gateway:
     build:

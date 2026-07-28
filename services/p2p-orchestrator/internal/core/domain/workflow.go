@@ -26,6 +26,14 @@ type Workflow struct {
 	// Durable Lease for Human-In-The-Loop cross-wait ownership
 	OwnerPod       string
 	LeaseExpiresAt time.Time
+
+	// TriggerPayload is the marshalled event that started this workflow, persisted on the row.
+	//
+	// A workflow has to carry its own input to be resumable. Nodes execute outside the transaction,
+	// so the pod that resumes a half-executed workflow is frequently not the pod that consumed the
+	// originating Kafka record — and that record belongs to a partition the survivor may not own.
+	// Without this, a resumed node has nothing to re-execute from.
+	TriggerPayload []byte
 }
 
 func (w *Workflow) NextNode() string {

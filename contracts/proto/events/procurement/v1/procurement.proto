@@ -1,0 +1,75 @@
+syntax = "proto3";
+package omniflow.procurement.v1;
+option go_package = "omniflow/contracts/procurement/v1;procurementv1";
+
+import "google/protobuf/timestamp.proto";
+import "buf/validate/validate.proto";
+
+// PurchaseOrderDrafted is emitted when the drafting agent has produced a purchase order and it has
+// been durably recorded. It is the first event in this system produced by an AI agent rather than
+// by deterministic code, which is why it carries provenance fields the other contracts do not:
+// a consumer must be able to tell what produced a PO, from which inputs, and under whose approval.
+//
+// Monetary values are strings, matching the inventory contracts: the wire format must not round.
+message PurchaseOrderDrafted {
+  string event_id     = 1 [(buf.validate.field).string.uuid = true];
+  string trace_parent = 2 [(buf.validate.field).string.pattern = "^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$"];
+
+  // The workflow this PO belongs to. Also the aggregate id on the outbox row.
+  string workflow_id = 3 [(buf.validate.field).string.uuid = true];
+
+  google.protobuf.Timestamp occurred_at  = 4 [(buf.validate.field).required = true];
+  google.protobuf.Timestamp published_at = 5 [(buf.validate.field).required = true];
+  uint64 sequence_engine_key = 6;
+
+  // Human-readable PO number, unique per PO.
+  string po_number    = 7 [(buf.validate.field).string.min_len = 1];
+  string mdm_vendor_id = 8 [(buf.validate.field).string.min_len = 1];
+  string currency     = 9 [(buf.validate.field).string.len = 3];
+
+  repeated PurchaseOrderLine lines = 10 [
+    (buf.validate.field).repeated.min_items = 1,
+    (buf.validate.field).repeated.max_items = 200
+  ];
+
+  // Sum of all line extended amounts. Recomputed and checked by the orchestrator before the PO is
+  // persisted — an agent is not trusted to do arithmetic.
+  string total_amount = 11 [(buf.validate.field).string.pattern = "^[0-9]+(\\.[0-9]{1,4})?$"];
+
+  AgentProvenance provenance = 12 [(buf.validate.field).required = true];
+}
+
+message PurchaseOrderLine {
+  string sku         = 1 [(buf.validate.field).string.min_len = 1];
+  string description = 2 [(buf.validate.field).string.max_len = 500];
+  string quantity    = 3 [(buf.validate.field).string.pattern = "^[0-9]+(\\.[0-9]{1,4})?$"];
+  string unit_price  = 4 [(buf.validate.field).string.pattern = "^[0-9]+(\\.[0-9]{1,4})?$"];
+  // quantity * unit_price. Verified server-side, never taken on the agent's word.
+  string extended_amount = 5 [(buf.validate.field).string.pattern = "^[0-9]+(\\.[0-9]{1,4})?$"];
+}
+
+// AgentProvenance is the governance record that travels WITH the event, not just in a log.
+//
+// A procurement buyer's first question about an autonomously drafted PO is "what produced this, and
+// can you prove it was reviewed?". Answering that from a log aggregator is not an answer; the
+// provenance has to be part of the contract so every downstream consumer is forced to carry it.
+message AgentProvenance {
+  string agent_id = 1 [(buf.validate.field).string.min_len = 1];
+  string model    = 2 [(buf.validate.field).string.min_len = 1];
+
+  // SHA-256 of the exact prompt sent, hex-encoded. The prompt itself may contain vendor data, so
+  // the hash travels on the bus and the body stays in the audit table.
+  string prompt_sha256 = 3 [(buf.validate.field).string.pattern = "^[0-9a-f]{64}$"];
+
+  // Links to the row in agent_decisions holding the full prompt, raw response, and cost.
+  string decision_id = 4 [(buf.validate.field).string.uuid = true];
+
+  uint32 prompt_tokens     = 5;
+  uint32 completion_tokens = 6;
+  // Micro-USD (1e-6 USD) to keep spend integral — floating-point money is a defect.
+  uint64 cost_micro_usd = 7;
+
+  // False when the value fell under the autonomous ceiling and no human reviewed it. A consumer
+  // can then apply its own policy rather than assuming every PO was seen by a person.
+  bool human_approved = 8;
+}

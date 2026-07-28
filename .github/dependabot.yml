@@ -74,7 +74,7 @@ updates:
     commit-message:
       prefix: "deps(docker)"
 
-  # RUNTIME images — cockroachdb/cockroach:v24.3.3 and apache/kafka:3.8.0 appear ONLY in
+  # RUNTIME images — the cockroachdb/cockroach and apache/kafka pins appear ONLY in
   # docker-compose.yml, never in a Dockerfile. `docker` and `docker-compose` are distinct Dependabot
   # ecosystems and the former does not read compose files, so these two pins — the database and the
   # broker, the most security-sensitive images in the stack — had zero surveillance while the config

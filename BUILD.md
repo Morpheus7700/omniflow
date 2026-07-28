@@ -57,7 +57,10 @@ the `scratch`/distroless container stages and guarantees no accidental `librdkaf
 
 ## 5. Booting the full stack
 Building is DB- and Kafka-free. Running the stack (Kafka + CockroachDB + all services) is done via
-`docker compose` and requires a CockroachDB Enterprise license for the Kafka-sink changefeeds — see the
+`docker compose` and needs **no license key**: compose runs CockroachDB as a single node
+(`start-single-node`), and single-node v24.3+ includes Kafka-sink changefeeds licence-free.
+`CRDB_LICENSE`/`CRDB_ORG` remain supported as optional env for a multi-node cluster, and `crdb-init`
+fails loudly rather than skipping if a key ever turns out to be required. See the
 [README](README.md) ("Running it") and `docs/kb/06-build-and-test.md`. The end-to-end and
 failure-survival proofs live in `scripts/` and run as GitHub Actions jobs.
 

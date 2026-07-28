@@ -17,7 +17,7 @@ real stack in CI** — not by asserting them in prose.
 - **Durable, resumable DAG workflow** with human-in-the-loop suspend/resume.
 - **Exactly-once effects** under duplicate delivery.
 - **FIFO / moving-average inventory valuation** with **HLC-ordered late-arrival restatement**.
-- **Precision-safe streaming projection** to a 3D browser timeline over SSE.
+- **Precision-safe streaming projection** to a browser settlement ledger over SSE.
 - **Failure-survival proofs** as first-class CI jobs (killed-pod resume, exactly-once suppression,
   FIFO restatement), each asserting its invariant on the real wire.
 
@@ -47,7 +47,7 @@ progress toward it.
   `crdb-init` or referenced by any script, and unreachable files invite the reader to assume a system
   is larger than it is.
 - **WebSocket transport.** SSE is the deliberate choice for a read-only broadcast stream; a WebSocket
-  upgrade, if ever pursued, is its own scoped and audited change (`docs/antigravity/WEBSOCKET_UPGRADE_SPEC.md`).
+  upgrade, if ever pursued, is its own scoped and audited change (`docs/adr/0001-sse-over-websocket.md`).
 - **Multi-node / multi-region CockroachDB.** Single-node is sufficient to prove the CDC and ordering
   properties; horizontal scale is an operational concern, not a correctness one.
 - **Production authn/z, tenancy, billing.** Not part of the systems-design thesis.

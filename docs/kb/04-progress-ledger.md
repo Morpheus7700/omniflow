@@ -26,11 +26,23 @@ CI jobs in `.github/workflows/e2e.yml`: `build`, `e2e`, `failtest-resume`, `fail
 `CRDB_LICENSE`.
 
 ## Critical path (NEXT)
-1. **[[07-the-gate]]** — human pushes repo + sets `CRDB_LICENSE`/`CRDB_ORG`. Then watch the 4 E2E
-   jobs go green. This is the real milestone — everything above is unproven until then.
-2. After green: README + SCOPE.md (portfolio framing).
-3. Then: the deferred **WebSocket upgrade** (`docs/antigravity/WEBSOCKET_UPGRADE_SPEC.md`), its own
-   audited prompt — do NOT fold into anything else.
+The gate this section used to describe — push the repo public, watch the first CI run — is long
+since passed. All 9 required checks are green on a branch-protected `master`, and the stack boots
+on real infrastructure every run.
+
+1. **Test `SaveCheckpoint`.** `services/p2p-orchestrator/internal/adapters/outbound/crdb/state_store.go`
+   has three divergent SQL branches and no Go test of any kind. Every exactly-once claim in the
+   README rests on it, and it is currently proven only indirectly by a shell script counting rows
+   in a booted stack — a proof that does not run on fork PRs. The pattern to copy is one directory
+   over, in inventory-intelligence's `repository_integration_test.go` (testcontainers + real CRDB).
+2. **Service lifecycle.** No `/healthz` or `/readyz` anywhere: all three root-module services
+   register a single `/` handler returning 200 before the DB pool has been touched, so
+   `depends_on: service_healthy` is meaningless for every app service. No `context.WithTimeout` on
+   any DB or Kafka call either.
+3. **Node execution is a stub.** `service.go` has `[EXTERNAL I/O EXECUTION HAPPENS HERE]` as a bare
+   comment — every DAG node is a no-op checkpoint. Either implement one real node action or say so
+   plainly in the README.
+4. Then: the deferred **WebSocket upgrade**, `docs/adr/0001-sse-over-websocket.md`.
 
 ## Backlog (not blocking)
 Lease-TTL reclaim enforcement (`owner_pod`/`lease_expires_at` written but not reaped); human-approval

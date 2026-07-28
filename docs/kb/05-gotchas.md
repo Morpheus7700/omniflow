@@ -101,7 +101,7 @@ stayed byte-for-byte. This is the ONLY sanctioned deviation from [[03-locked-con
 - **Changefeeds run license-free on a single-node cluster** (`start-single-node`, what compose runs) under
   v24.3+ licensing. `CRDB_LICENSE`/`CRDB_ORG` are OPTIONAL env, needed only for a *multi-node* cluster.
   crdb-init + scripts + CI attempt changefeed creation unconditionally and **fail loudly** if a key is
-  ever actually required — they never silently skip. See [[07-the-gate]].
+  ever actually required — they never silently skip.
 - crdb-init runs in a *separate* cockroach container (CLI only) → every `cockroach sql` needs
   `--host=cockroachdb:26257`, else it hangs on localhost.
 - `SHOW CHANGEFEED JOBS` has a `description` column, no `statement` column.

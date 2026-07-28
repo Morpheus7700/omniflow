@@ -1,7 +1,8 @@
 # 06 · Build & Test
 
-**No local Docker daemon on this machine.** Local verification = build + vet + `bash -n` only. The
-stack, changefeeds, and all failure proofs run in **GitHub Actions** (see [[07-the-gate]]).
+The stack, changefeeds, and all failure proofs run in **GitHub Actions**. If the machine you are on
+has no Docker daemon, local verification is build + vet + `go test ./...` + `bash -n`, and CI is the
+first place the compose stack actually boots — so never report a boot result you did not observe.
 
 ## Build / vet (must exit 0)
 ```bash
@@ -34,6 +35,11 @@ Env-driven. `SEED_MODE` picks the entry seam, `SEED_ACTION` picks the lifecycle.
 - `scripts/failtest_killed_pod.sh` — durable resume.
 - `scripts/failtest_exactly_once.sh` — duplicate suppression.
 - `scripts/failtest_fifo_restatement.sh` — HLC restatement.
+- `scripts/failtest_dlq_poison.sh` — poison-pill routing, both wire-level (illegal protobuf) and
+  semantic (wire-valid, fails `buf.validate`). Those take different code paths: a wire-level pill
+  fails at `proto.Unmarshal` and never reaches the validator, so it proves nothing about
+  validation-failure handling. A test that only exercises an earlier guard clause proves nothing
+  about the code behind it.
 
 `CRDB_LICENSE` is now OPTIONAL: single-node CRDB v24.3+ runs changefeeds license-free, so the scripts
 no longer `exit 78` when it's absent — they boot and fail LOUDLY if a key is genuinely needed (crdb-init
@@ -47,4 +53,4 @@ See [[05-gotchas]] for the traps these encode.
 `tools/mock-llm` returns `{"choices":[{"message":{"content":"1"}}]}` on `POST /chat/completions` —
 deterministic classifier for `email` mode only. Wired into compose as `mock-llm`.
 
-Related: [[04-progress-ledger]] · [[07-the-gate]]
+Related: [[04-progress-ledger]] · [[05-gotchas]]

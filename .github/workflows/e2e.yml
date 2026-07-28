@@ -224,6 +224,31 @@ jobs:
       - name: Run DLQ poison-pill test
         run: bash scripts/failtest_dlq_poison.sh
 
+  failtest-agent-exactly-once:
+    name: test agent exactly-once effect
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25   # a Kafka-healthcheck / changefeed stall must fail fast+clean, not hang to the 6h cap
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    env:
+      CRDB_LICENSE: ${{ secrets.CRDB_LICENSE }}
+      CRDB_ORG: ${{ secrets.CRDB_ORG }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.25'
+
+      # The proof for the agent layer. The drafting agent calls a model OUTSIDE the workflow
+      # transaction — it must, or a multi-second LLM call would hold a row lock — which makes node
+      # execution at-least-once by construction. This kills the orchestrator mid-workflow and
+      # asserts that the resumed run does NOT issue a second purchase order: at-least-once
+      # execution, exactly-once EFFECT, enforced by a deterministic idempotency key rather than by
+      # hoping the crash does not happen.
+      - name: Run agent exactly-once test
+        run: bash scripts/failtest_agent_exactly_once.sh
+
   security:
     name: security scan (gosec + trivy)
     runs-on: ubuntu-latest

@@ -3,6 +3,7 @@ package kafka
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -66,6 +67,10 @@ func (c *Consumer) Start(ctx context.Context) {
 func (c *Consumer) processMessageWithRetry(ctx context.Context, msg *kgo.Record) {
 	topic := msg.Topic
 
+	// Captured before the changefeed envelope is unwrapped below, because msg.Value is
+	// overwritten in place and the DLQ must carry what the source topic actually published.
+	originalValue := msg.Value
+
 	var traceParent string
 	var isApproval bool
 
@@ -73,7 +78,7 @@ func (c *Consumer) processMessageWithRetry(ctx context.Context, msg *kgo.Record)
 		isApproval = true
 		var env v1.HumanApprovalEvent
 		if err := proto.Unmarshal(msg.Value, &env); err != nil {
-			c.routeToDLQ(ctx, msg, err)
+			c.routeToDLQ(ctx, msg, originalValue, err)
 			return
 		}
 		traceParent = env.TraceParent
@@ -86,7 +91,7 @@ func (c *Consumer) processMessageWithRetry(ctx context.Context, msg *kgo.Record)
 		}
 
 		if err := json.Unmarshal(msg.Value, &env); err != nil {
-			c.routeToDLQ(ctx, msg, err)
+			c.routeToDLQ(ctx, msg, originalValue, err)
 			return
 		}
 
@@ -103,13 +108,13 @@ func (c *Consumer) processMessageWithRetry(ctx context.Context, msg *kgo.Record)
 		}
 		payloadBytes, err := decodeChangefeedBytes(env.After.Payload)
 		if err != nil {
-			c.routeToDLQ(ctx, msg, err)
+			c.routeToDLQ(ctx, msg, originalValue, err)
 			return
 		}
 
 		var payload v1.VendorEmailReceived
 		if err := proto.Unmarshal(payloadBytes, &payload); err != nil {
-			c.routeToDLQ(ctx, msg, err)
+			c.routeToDLQ(ctx, msg, originalValue, err)
 			return
 		}
 		traceParent = payload.TraceParent
@@ -127,22 +132,25 @@ func (c *Consumer) processMessageWithRetry(ctx context.Context, msg *kgo.Record)
 
 	maxRetries := 5
 	backoff := 100 * time.Millisecond
+	var err error
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
-		err := c.service.ProcessEvent(ctx, msg.Value, isApproval)
+		err = c.service.ProcessEvent(ctx, msg.Value, isApproval)
 		if err == nil {
 			c.commitOffset(ctx, msg)
 			return
 		}
 
 		if errors.Is(err, domain.ErrTerminal) {
-			slog.Error("Terminal error in orchestrator", "error", err, "attempt", attempt)
-			c.routeToDLQ(ctx, msg, err)
+			slog.Error("Terminal error in orchestrator", "error", err, "attempt", attempt,
+				"topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset)
+			c.routeToDLQ(ctx, msg, originalValue, err)
 			return
 		}
 
 		if errors.Is(err, domain.ErrTransient) {
-			slog.Warn("Transient error, retrying in-place", "error", err, "attempt", attempt)
+			slog.Warn("Transient error, retrying in-place", "error", err, "attempt", attempt,
+				"topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset)
 			select {
 			case <-ctx.Done():
 				return
@@ -152,30 +160,55 @@ func (c *Consumer) processMessageWithRetry(ctx context.Context, msg *kgo.Record)
 			continue
 		}
 
-		slog.Warn("Unknown error, assuming transient for safety", "error", err, "attempt", attempt)
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(backoff):
-		}
-		backoff *= 2
+		// Unclassified. This used to log "assuming transient for safety" and retry, which was not
+		// safe at all: the retry budget is five attempts over ~3.1 seconds, so every unnameable
+		// failure bought three seconds of latency and then dead-lettered anyway. Worse, the store
+		// classified only 55P03, so CockroachDB's routine 40001 serialization_failure — the
+		// expected steady-state signal under contention — landed here and dead-lettered valid
+		// business events. 40001 is now classified transient in internal/platform/errclass, which
+		// leaves this branch for genuinely unknown errors, and those fail closed.
+		slog.Error("Unclassified error, failing closed to DLQ", "error", err, "attempt", attempt,
+			"topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset)
+		c.routeToDLQ(ctx, msg, originalValue, fmt.Errorf("unclassified error (defaulting terminal): %w", err))
+		return
 	}
 
-	slog.Error("Exhausted retries, routing to DLQ")
-	c.routeToDLQ(ctx, msg, errors.New("retries exhausted"))
+	slog.Error("Exhausted retries, routing to DLQ",
+		"topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset)
+	c.routeToDLQ(ctx, msg, originalValue, fmt.Errorf("transient retries exhausted after %d attempts: %w", maxRetries, err))
 }
 
-func (c *Consumer) routeToDLQ(ctx context.Context, msg *kgo.Record, err error) {
-	topic := "omniflow.orchestration.v1.dlq"
+// routeToDLQ sends a failed record to the dead-letter topic of the topic it came from.
+//
+// This previously hardcoded "omniflow.orchestration.v1.dlq" for every failure, but this consumer
+// subscribes to TWO topics carrying DIFFERENT wire formats: omniflow.orchestration.v1 carries a
+// CockroachDB changefeed JSON envelope, while omniflow.p2p.approval.v1 carries a bare protobuf
+// HumanApprovalEvent. Mixing them in one dead-letter topic meant a re-drive tool had no way to
+// know how to decode a given record, and replaying a dead-lettered approval back into the
+// orchestration topic re-poisoned it immediately — an infinite DLQ ping-pong. Approval-DLQ volume
+// was also invisible to any alarm watching the orchestration DLQ.
+//
+// dlqValue is the ORIGINAL record value. processMessageWithRetry overwrites msg.Value with the
+// unwrapped inner protobuf before the retry loop, so reading msg.Value here would dead-letter a
+// payload that no longer matches the source topic's format and is therefore not replayable.
+func (c *Consumer) routeToDLQ(ctx context.Context, msg *kgo.Record, dlqValue []byte, err error) {
+	topic := msg.Topic + ".dlq"
+
+	headers := make([]kgo.RecordHeader, 0, len(msg.Headers)+2)
+	headers = append(headers, msg.Headers...)
+	headers = append(headers,
+		kgo.RecordHeader{Key: "error_reason", Value: []byte(err.Error())},
+		kgo.RecordHeader{Key: "source_topic", Value: []byte(msg.Topic)},
+	)
+
+	slog.Error("routing to DLQ", "error", err, "dlq_topic", topic,
+		"source_topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset)
 
 	dlqRecord := &kgo.Record{
-		Topic: topic,
-		Key:   msg.Key,
-		Value: msg.Value,
-		Headers: append(msg.Headers, kgo.RecordHeader{
-			Key:   "error_reason",
-			Value: []byte(err.Error()),
-		}),
+		Topic:   topic,
+		Key:     msg.Key,
+		Value:   dlqValue,
+		Headers: headers,
 	}
 
 	errProduce := c.client.ProduceSync(ctx, dlqRecord).FirstErr()

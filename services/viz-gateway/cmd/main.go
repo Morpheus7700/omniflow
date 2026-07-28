@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -41,12 +42,22 @@ func main() {
 	// 3. Setup Kafka Consumer
 	kafkaBrokers := []string{"localhost:9092"}
 	if envBrokers := os.Getenv("KAFKA_BROKERS"); envBrokers != "" {
-		kafkaBrokers = []string{envBrokers}
+		// Split on comma like every other service. Without this a multi-broker KAFKA_BROKERS
+		// value becomes one malformed seed address, so the gateway can only ever reach a
+		// single-broker cluster.
+		kafkaBrokers = strings.Split(envBrokers, ",")
 	}
 	cl, err := kgo.NewClient(
 		kgo.SeedBrokers(kafkaBrokers...),
 		kgo.ConsumerGroup("viz-gateway"),
 		kgo.ConsumeTopics("omniflow.p2p.completed.v1", "omniflow.inventory.fact_inventory_movement", "omniflow.inventory.fact_inventory_snapshot"),
+		// Manual commit, matching the other three consumers. This option was previously absent,
+		// which left franz-go's default autocommit active: offsets were committed on a 5s timer
+		// for everything polled, regardless of whether the SSE broadcast had succeeded, and the
+		// consumer's MarkCommitRecords call was a silent no-op (franz-go ignores marks unless
+		// built with AutoCommitMarks). CLAUDE.md names the manual-commit contract load-bearing,
+		// so this service was violating it by omission rather than by decision.
+		kgo.DisableAutoCommit(),
 	)
 	if err != nil {
 		slog.Error("Failed to create Kafka client", "error", err)

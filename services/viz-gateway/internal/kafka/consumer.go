@@ -28,6 +28,11 @@ func NewConsumer(client *kgo.Client, broker *api.SSEBroker) *Consumer {
 func (c *Consumer) Start(ctx context.Context) {
 	for {
 		fetches := c.client.PollFetches(ctx)
+		// See the equivalent check in the other consumers: a cancelled context yields a fetch
+		// that IsClientClosed does not recognise, so without this the loop hot-spins on SIGTERM.
+		if ctx.Err() != nil {
+			return
+		}
 		if fetches.IsClientClosed() {
 			return
 		}
@@ -42,7 +47,14 @@ func (c *Consumer) Start(ctx context.Context) {
 			} else if record.Topic == "omniflow.p2p.completed.v1" {
 				c.handleP2PCompleted(record)
 			}
-			c.client.MarkCommitRecords(record)
+			// CommitRecords, not MarkCommitRecords: the latter is a no-op unless the client was
+			// built with AutoCommitMarks, so this gateway was committing purely on franz-go's
+			// autocommit timer. Committing here means the offset advances only after the record
+			// has been handed to the SSE broker.
+			if err := c.client.CommitRecords(ctx, record); err != nil {
+				slog.Error("offset commit failed", "error", err,
+					"topic", record.Topic, "partition", record.Partition, "offset", record.Offset)
+			}
 		})
 	}
 }

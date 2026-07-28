@@ -3,12 +3,14 @@ package crdb
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 
+	"omniflow/internal/platform/errclass"
 	"omniflow/services/p2p-orchestrator/internal/core/domain"
 	"omniflow/services/p2p-orchestrator/internal/core/ports"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -91,20 +93,43 @@ func (s *Store) LoadWorkflowByEventIDTx(ctx context.Context, tx ports.Transactio
 	return scanWorkflow(ptx.QueryRow(ctx, loadWorkflowByEventIDSQL, eventID))
 }
 
+// classify maps a driver error onto this service's domain sentinels using the shared SQLSTATE
+// taxonomy in internal/platform/errclass.
+//
+// This store previously recognised exactly one SQLSTATE — 55P03, the FOR UPDATE NOWAIT lease
+// contention path — and returned everything else raw. Raw errors reached the consumer's unknown
+// branch, which retried them five times and then dead-lettered. That mattered most for 40001
+// (serialization_failure), which is not a fault at all but CockroachDB's designed signal that an
+// optimistic-concurrency race was lost and the transaction should be replayed. Under contention
+// the system therefore dead-lettered valid business events as a matter of routine.
+func classify(err error) error {
+	if err == nil {
+		return nil
+	}
+	switch errclass.Classify(err) {
+	case errclass.Transient:
+		return fmt.Errorf("%w: %v", domain.ErrTransient, err)
+	case errclass.Terminal:
+		return fmt.Errorf("%w: %v", domain.ErrTerminal, err)
+	default:
+		// Deliberately unwrapped: the consumer fails closed on anything it cannot name, and
+		// preserving the raw error keeps the SQLSTATE visible in the DLQ header for triage.
+		return err
+	}
+}
+
 func (s *Store) AcquireLease(ctx context.Context, workflowID string) (ports.Transaction, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return nil, err
+		return nil, classify(err)
 	}
 
 	_, err = tx.Exec(ctx, `SELECT id FROM workflows WHERE id = $1 FOR UPDATE NOWAIT`, workflowID)
 	if err != nil {
-		tx.Rollback(ctx)
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "55P03" {
-			return nil, domain.ErrTransient
+		if rbErr := tx.Rollback(ctx); rbErr != nil && !errors.Is(rbErr, pgx.ErrTxClosed) {
+			slog.Error("rollback after failed lease acquisition", "error", rbErr, "workflow_id", workflowID)
 		}
-		return nil, err
+		return nil, classify(err)
 	}
 
 	return &txWrapper{tx: tx}, nil
@@ -114,11 +139,11 @@ func (s *Store) CheckIdempotency(ctx context.Context, workflowID, nodeID string,
 	var exists bool
 	err := s.pool.QueryRow(ctx, `
 		SELECT EXISTS(
-			SELECT 1 FROM node_execution_ledger 
+			SELECT 1 FROM node_execution_ledger
 			WHERE workflow_id = $1 AND node_id = $2 AND attempt = $3
 		)
 	`, workflowID, nodeID, attempt).Scan(&exists)
-	return exists, err
+	return exists, classify(err)
 }
 
 func (s *Store) SaveCheckpoint(ctx context.Context, tx ports.Transaction, wf *domain.Workflow, nodeID string, attempt int, payload []byte) error {

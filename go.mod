@@ -3,7 +3,7 @@ module omniflow
 go 1.25.0
 
 require (
-	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.11-20260415201107-50325440f8f2.1
+	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.11-20260709200747-435963d16310.1
 	buf.build/go/protovalidate v1.2.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/shopspring/decimal v1.4.0

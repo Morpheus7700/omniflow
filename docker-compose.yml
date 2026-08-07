@@ -1,6 +1,6 @@
 services:
   cockroachdb:
-    image: cockroachdb/cockroach:v26.2.4
+    image: cockroachdb/cockroach:v26.2.5
     command: start-single-node --insecure --accept-sql-without-tls
     ports:
       - "26257:26257"
@@ -64,7 +64,7 @@ services:
     restart: "no"
 
   crdb-init:
-    image: cockroachdb/cockroach:v26.2.4
+    image: cockroachdb/cockroach:v26.2.5
     depends_on:
       cockroachdb:
         condition: service_healthy

@@ -1,7 +1,10 @@
 # 04 · Progress Ledger
 
-Condensed status. Full detail in `docs/audit/STATE.md`. Everything below is **committed** in
-`d351b96` on `master`, on top of baseline `388cc35`. **Nothing is pushed; no CI has run.**
+Condensed status. Full detail in `docs/audit/STATE.md`.
+
+**Updated 2026-08-19.** The line this note carried for months — *"Nothing is pushed; no CI has
+run"* — was false long before it was corrected. Everything below is on a public, branch-protected
+`master` where every one of the 9 required checks runs on every PR.
 
 ## Make-It-Real prompts
 | Prompt | What | Status |
@@ -25,24 +28,49 @@ CI jobs in `.github/workflows/e2e.yml`: `build`, `e2e`, `failtest-resume`, `fail
 `failtest-restatement`, `security` (gosec+trivy). Plus `codeql.yml`. E2E jobs skip cleanly without
 `CRDB_LICENSE`.
 
-## Critical path (NEXT)
-The gate this section used to describe — push the repo public, watch the first CI run — is long
-since passed. All 9 required checks are green on a branch-protected `master`, and the stack boots
-on real infrastructure every run.
+## Critical path — CLEARED 2026-08-19
 
-1. **Test `SaveCheckpoint`.** `services/p2p-orchestrator/internal/adapters/outbound/crdb/state_store.go`
-   has three divergent SQL branches and no Go test of any kind. Every exactly-once claim in the
-   README rests on it, and it is currently proven only indirectly by a shell script counting rows
-   in a booted stack — a proof that does not run on fork PRs. The pattern to copy is one directory
-   over, in inventory-intelligence's `repository_integration_test.go` (testcontainers + real CRDB).
-2. **Service lifecycle.** No `/healthz` or `/readyz` anywhere: all three root-module services
-   register a single `/` handler returning 200 before the DB pool has been touched, so
-   `depends_on: service_healthy` is meaningless for every app service. No `context.WithTimeout` on
-   any DB or Kafka call either.
-3. **Node execution is a stub.** `service.go` has `[EXTERNAL I/O EXECUTION HAPPENS HERE]` as a bare
-   comment — every DAG node is a no-op checkpoint. Either implement one real node action or say so
-   plainly in the README.
-4. Then: the deferred **WebSocket upgrade**, `docs/adr/0001-sse-over-websocket.md`.
+All three items this section listed are done. Kept with their outcomes rather than deleted, because
+what each one turned out to be is more useful than the fact it is finished.
+
+1. ~~**Test `SaveCheckpoint`.**~~ **Done** — eight integration tests in
+   `state_store_integration_test.go` drive the exactly-once CTE directly against real CockroachDB.
+   They cover redelivery suppression and the fact that a *genuine retry still emits* (the pair only
+   means something together — either alone is satisfied by a trivially wrong implementation), the
+   `$5`/`$11` UUID-vs-STRING placeholder split, 19-digit HLC fidelity, and rollback releasing the
+   idempotency marker. That last one is the case the shell proof structurally could not catch: a
+   failed checkpoint leaving its ledger row behind means the redelivery hits `ON CONFLICT DO
+   NOTHING`, the outbox row is never written *by anyone*, and the event is lost permanently while
+   every table looks consistent.
+2. ~~**Service lifecycle.**~~ **Partly done.** All four services now expose real `/healthz` and
+   `/readyz` (`internal/platform/health`, duplicated into viz-gateway because it is a separate
+   module). Liveness performs no I/O — deliberately: an orchestrator *kills* a container whose
+   liveness probe fails, so a liveness probe that pinged CockroachDB would turn a 30-second database
+   blip into a fleet-wide restart. Readiness checks dependencies with a per-check 2s timeout and
+   gates on startup completion.
+   **Still open:** `context.WithTimeout` on DB and Kafka calls generally (only a handful exist), and
+   compose healthchecks for the app services — the Go images are `distroless/static:nonroot` and
+   ship no shell, so `CMD-SHELL` cannot run and `depends_on: service_healthy` stays decorative until
+   the binaries gain a self-probe mode.
+3. ~~**Node execution is a stub.**~~ **Done** — the `draft_po` node calls a real model through the
+   drafting agent, outside the workflow transaction (a multi-second LLM call cannot hold a row
+   lock). That makes node execution at-least-once by construction, so the guarantee proven is
+   exactly-once *effect*, enforced by a deterministic idempotency key and asserted by
+   `scripts/failtest_agent_exactly_once.sh` across a mid-workflow kill.
+4. Still deferred: the **WebSocket upgrade**, `docs/adr/0001-sse-over-websocket.md`.
+
+## What is actually next
+
+Nothing is blocking. In rough order of value:
+
+- **Two repo settings only a human can change.** Dependabot *alerts* are disabled repo-wide, so
+  nothing is raised *because* an advisory was published — `govulncheck` has been carrying that
+  alone. And `test agent exactly-once effect` passes but is not among the 9 required contexts, so
+  it is advisory.
+- **Bound the remaining DB/Kafka calls** with `context.WithTimeout`, and give the service binaries a
+  self-probe mode so compose healthchecks become real.
+- **10 gosec G104 warnings** (unhandled errors) in code we own — the only code-scanning findings
+  left after generated files were excluded. Low severity, but they are now the whole list.
 
 ## Backlog (not blocking)
 Lease-TTL reclaim enforcement (`owner_pod`/`lease_expires_at` written but not reaped); human-approval

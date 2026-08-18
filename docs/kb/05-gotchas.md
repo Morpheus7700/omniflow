@@ -91,11 +91,15 @@ stayed byte-for-byte. This is the ONLY sanctioned deviation from [[03-locked-con
   rebalance wait). Symptom is in the *consumer* log, not Kafka's. Fixed 2026-07-24.
 
 ## Kafka image
-- **Use the JVM image `apache/kafka:3.8.0`, NOT `apache/kafka-native`.** The native (GraalVM) image
+- **Use the JVM image `apache/kafka`, NOT `apache/kafka-native`.** The native (GraalVM) image
   ships no JRE, so the `kafka-broker-api-versions.sh` healthcheck (a Java-launching shell script) can't
   run → kafka never reports healthy → `crdb-init` (gated on `kafka: service_healthy`) never starts →
   every boot job hangs to the CI cap. The JVM image ships the same CLI scripts *with* a JRE. (Fixed
   2026-07-24; see `docs/audit/GROUNDING_AUDIT_2026-07-24.md` finding #1.)
+- **The pinned tag is `apache/kafka:4.3.1`** (`docker-compose.yml`), not the 3.8.0 this note claimed
+  until 2026-08-18. The JVM-vs-native rule above is what matters and is unchanged; only the version
+  had drifted. Dependabot's `docker-compose` ecosystem owns this pin — don't hardcode a version in
+  prose here again, it will rot.
 
 ## CockroachDB specifics
 - **Changefeeds run license-free on a single-node cluster** (`start-single-node`, what compose runs) under
@@ -244,6 +248,18 @@ no fact row was written — the second half proves the validator sits in front o
 - A module that changes its import path (`protovalidate-go` → `buf.build/go/protovalidate`) makes the
   manifest **unresolvable**, which blocks Dependabot from updating *anything* in that module —
   a single stale dep silently freezes the whole security pipeline.
+- ⚠️ **`open-pull-requests-limit` does not queue — it ERRORS, and the error is invisible.** With the
+  root-Go limit of 5 reached (#38, #42, #43, #44, #46 all open), the 2026-08-18 job on `go.mod`
+  ended `Errored with the message "Dependabot cannot open any more pull requests"` and produced
+  nothing. Updates that were due — possibly security-relevant ones — were never raised and there is
+  no way to see what they were. A full queue is therefore not a backlog, it is a **blackout**:
+  leaving stale PRs open actively suppresses new ones. Check the ⚠️ icon next to a manifest at
+  `/network/updates`; nothing about this reaches a CI check or an email.
+- **Dependabot *alerts* are a separate switch from Dependabot *version updates*.** This repo has
+  version updates running weekly while `/security/dependabot` reads "Dependabot alerts are
+  disabled" — so routine bumps arrive, but nothing is raised *because* an advisory was published.
+  That is the opposite of the priority you want, and it is why `govulncheck` in CI has been doing
+  the entire job of catching reachable CVEs. Enabling alerts is a repo Settings change.
 
 ## Report-only scanners become unread scanners
 
@@ -258,6 +274,38 @@ report-only; keep govulncheck as the gate. **Scan BOTH modules**: `services/viz-
 `go.mod` and is invisible to a root-module scan (it was carrying a vulnerable `x/text` while root
 reported clean). Pin the scanner to a tag, not `@latest`, or a scanner release can redden the build
 with no code change.
+
+## A floating `go-version` defeats the govulncheck gate — pin the exact patch
+
+The gate above was pinned at the scanner (`govulncheck@v1.6.0`) but left floating at the *toolchain*
+(`go-version: '1.25'`), and that hole silently disarmed it for days.
+
+**`setup-go` resolves a floating spec against the runner image's tool cache first.** Any cached
+1.25.x satisfies `'1.25'`, so it keeps returning that patch and never fetches the newer one. The
+evidence, from PR #49 (a PR that touched only `frontend/package-lock.json`):
+
+- `actions/go-versions` published 1.25.13 at **2026-08-14T03:55Z**.
+- The run at **2026-08-14T12:35Z** — 8½ hours later — still logged `go version go1.25.12`.
+- govulncheck exited 3 with **seven reachable stdlib CVEs**, every one `Fixed in: go1.25.13`.
+
+So **re-running does not fix this**, and that is the trap: the failure looks transient and unrelated
+to the diff, which invites exactly the wrong response (re-run it, or blame the PR). Only an explicit
+version changes what gets installed.
+
+Corollaries, all of them earned:
+
+- **A green check is only as fresh as its run.** Nine other PRs showed green from 2026-08-07 —
+  before these CVEs were published. Stale green is not clearance. After any security-baseline change,
+  re-run every open PR; never merge on a check older than the baseline.
+- **CI must build the toolchain you ship.** CI sat on the 1.25 line while all six Go builder stages
+  use `FROM golang:1.26` — so the gate was scanning a stdlib no artifact ever contained. The pin is
+  now `1.26.6` in all nine `e2e.yml` jobs *and* the one in `codeql.yml` (ten sites; it is easy to
+  miss codeql.yml, which has its own `setup-go`).
+- **`go.mod` does not pin the toolchain.** `go 1.25.0` is a minimum-language declaration; the
+  installed toolchain is whatever `setup-go` put on PATH.
+- **Nothing bumps this for you.** Dependabot's `github-actions` ecosystem updates action refs only —
+  it will never touch a `go-version:` value. An exact pin is a standing manual obligation, and that
+  is the correct trade: a security gate that silently re-floats is not a gate.
 
 ## Frontend build failures take down the ENTIRE E2E matrix
 

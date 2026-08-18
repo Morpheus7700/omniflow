@@ -109,7 +109,7 @@ partition permanently on the first poison message.
 
 - **CockroachDB v24.3 native JSON changefeeds** for CDC. Not Debezium — the database is the CDC engine.
   No license key needed: a single-node v24.3+ cluster runs Kafka-sink changefeeds license-free.
-- **Kafka (KRaft, single-node)** as the event bus, on the JVM image `apache/kafka:3.8.0` — deliberately
+- **Kafka (KRaft, single-node)** as the event bus, on the JVM image `apache/kafka` — deliberately
   *not* `apache/kafka-native`, whose GraalVM image ships no JRE and so cannot run the shell-script
   health probe, leaving every boot job hanging.
 - **franz-go** as the Kafka client — pure Go, `CGO_ENABLED=0`, static binaries, no `librdkafka`.

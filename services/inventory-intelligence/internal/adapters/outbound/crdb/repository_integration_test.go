@@ -34,7 +34,7 @@ import (
 // The container is driven directly rather than through testcontainers' cockroachdb helper module:
 // that module depends on pgx and would drag the production pgx version forward as a side effect of
 // adding tests. Keeping the data-path dependency untouched is worth twenty lines of setup.
-const crdbImage = "cockroachdb/cockroach:v26.2.4"
+const crdbImage = "cockroachdb/cockroach:v26.2.5"
 
 // TestCRDBImageMatchesCompose enforces the pin the comment above only asserts.
 //

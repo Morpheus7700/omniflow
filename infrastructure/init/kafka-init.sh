@@ -17,8 +17,11 @@ set -eo pipefail
 #   poison message wedges its partition forever. The happy-path E2E never exercises it, so nothing
 #   would have caught this until production.
 #
-# This runs in the apache/kafka:3.8.0 JVM image, which ships the CLI scripts AND the JRE to run them
-# (the kafka-native image does not — see the note on the kafka service in docker-compose.yml).
+# This runs in the apache/kafka JVM image pinned in docker-compose.yml, which ships the CLI scripts
+# AND the JRE to run them (the kafka-native image does not — see the note on the kafka service
+# there). The version deliberately is not named here: Dependabot's docker-compose ecosystem owns
+# that pin and cannot rewrite a shell comment, so a version written here rots on the next bump —
+# which is exactly what happened to the 3.8.0 this line used to claim.
 # Readiness is already gated by compose (`depends_on: { kafka: service_healthy }`), so there are no
 # wait loops here — same reasoning as crdb-init.sh.
 

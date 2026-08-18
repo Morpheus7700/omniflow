@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 )
 
 // chatResponse mirrors the exact subset CommBot's gateway decodes. The classifier prompt instructs
@@ -109,7 +110,20 @@ func main() {
 	})
 
 	slog.Info("mock-llm listening", "addr", addr, "intent", intent)
-	if err := http.ListenAndServe(addr, mux); err != nil {
+	// An explicit server rather than http.ListenAndServe, which wires no timeouts at all (gosec
+	// G114). A connection that opens and then sends nothing occupies a goroutine and an fd forever;
+	// enough of them and the process stops accepting, which in this stack looks like the LLM gateway
+	// hanging rather than the mock running out of file descriptors. It is only a test double, but a
+	// test double that wedges takes the whole E2E matrix with it, and the fix is four lines.
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		slog.Error("mock-llm exited", "error", err)
 		os.Exit(1)
 	}

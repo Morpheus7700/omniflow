@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+	"strconv"
 )
 
 var (
@@ -43,7 +44,11 @@ func (s *CommBotService) ProcessVendorEmail(ctx context.Context, email *VendorEm
 		trace.WithAttributes(
 			attribute.String("event.id", email.EventID),
 			attribute.String("vendor.mdm_id", email.MDMVendorID),
-			attribute.Int64("sequence.engine.key", int64(email.SequenceEngineKey)),
+			// STRING, not Int64. sequence_engine_key is a 19-digit HLC carried as a string
+			// end-to-end (a locked decision — see CLAUDE.md), and int64() here both
+			// contradicts that and narrows a uint64: a key above MaxInt64 wraps negative
+			// and the span silently claims an ordering that never existed.
+			attribute.String("sequence.engine.key", strconv.FormatUint(email.SequenceEngineKey, 10)),
 		),
 	)
 	defer span.End()

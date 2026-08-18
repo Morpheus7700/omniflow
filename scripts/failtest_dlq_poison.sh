@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Git Bash / MSYS2 on Windows rewrites arguments that look like absolute POSIX paths into Windows
+# paths before the process ever sees them, so `docker compose exec -T kafka /opt/kafka/bin/...`
+# arrives inside the container as `C:/Program Files/Git/opt/kafka/bin/...` and exits 127. The path
+# is meaningful in the CONTAINER, not on the host, so the rewrite is always wrong here. Exporting
+# this disables it. On Linux and macOS the variable is simply ignored, so CI is unaffected — which
+# is exactly why this never showed up until the stack was first booted on Windows.
+export MSYS_NO_PATHCONV=1
+
 cd "$(dirname "$0")/.."
 
 # Proves the dead-letter path actually works, which no other test covers.

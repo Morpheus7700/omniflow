@@ -26,7 +26,11 @@ read it before editing scripts, consumers, or schema. Architecture decisions liv
 Prove the existing core RUNS end-to-end and SURVIVES failure. STOP adding blueprint surface
 (K8s/Istio/Neo4j/Pinecone/ADK/LiteLLM/a separate BI tier). The liability we kill is "compiles but
 never run" — **never accept simulated logs as verification.** The real E2E boot must execute in
-GitHub Actions or Codespaces (no local Docker daemon available on this machine).
+GitHub Actions — and now also locally: Docker Desktop is installed on this machine and
+`bash scripts/e2e.sh` passes here (seed → changefeed → DAG → HITL → SSE, verified
+2026-08-18). On Windows the scripts export `MSYS_NO_PATHCONV=1` themselves; without it Git
+Bash rewrites in-container paths and every `docker compose exec` exits 127. CI remains the
+authority — a local pass is a fast pre-check, not a substitute for the required checks.
 
 ## Locked decisions (do not re-litigate)
 - **CDC = CockroachDB native JSON changefeeds.** No Debezium, ever.

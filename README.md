@@ -141,13 +141,26 @@ highest-risk logic is exercised through its ports with in-memory fakes:
 | `p2p-orchestrator/…/domain` | Kahn topo-sort determinism across repeated runs over freshly built maps (Go randomizes map iteration, so this is a real assertion), plus cycle detection joining `ErrTerminal` so a cyclic workflow goes straight to the DLQ instead of retrying forever. |
 | `viz-gateway/internal/kafka` | Changefeed decode: the `after{}` envelope must be unwrapped and a top-level payload **dropped** rather than projected empty; `UseNumber` must preserve a 19-digit HLC key that a default JSON decode corrupts. Asserted through a real SSE broker, so the wire format is covered too. |
 | `commbot/…/outbound/llm` | The zero-trust quarantine boundary: allowlist checked *before* DNS, suffix/prefix/userinfo confusion rejected, and an allowlisted host that resolves inward (cloud-metadata `169.254.169.254`, loopback, RFC1918) still refused. |
+| `commbot/…/core/domain` | Domain→protobuf enum mapping is an explicit switch, not a numeric cast. The cast it replaced assumed a hand-written `iota` block and a *generated* proto enum would stay numerically aligned forever; inserting one value in the wire contract would have republished every subsequent event under the wrong intent, with nothing to error on. Also asserts a value that wraps under `int32` cannot become a valid enum. |
+| `internal/platform/health` | Liveness must ignore dependencies while readiness must not — an orchestrator *kills* a container whose liveness probe fails, so a DB blip that failed liveness would restart the fleet. Also: readiness is false before wiring completes, a hung dependency times out rather than hanging, and one slow check cannot poison the next. |
 
 **Tier 2 — integration (`-tags=integration`, ephemeral real CockroachDB via testcontainers).** Covers
 what a fake cannot honestly assert, because the guarantee *is* the SQL: single-transaction atomicity
 (including that the idempotency marker rolls back — otherwise a failed event could never be retried),
 the exactly-once guard under redelivery, lot ordering by `sequence_engine_key`, and DECIMAL/INT8
-fidelity across the wire. It applies the shipped `infrastructure/crdb_schema.sql` rather than
-duplicating DDL, so the test cannot drift from what deploys.
+fidelity across the wire.
+
+This is where the orchestrator's exactly-once CTE is pinned: eight tests drive `SaveCheckpoint`
+directly, covering redelivery suppression, that a genuine retry still emits (the pair only means
+something together), the `$5`/`$11` UUID-vs-STRING placeholder split, 19-digit HLC fidelity, and —
+the sharpest — that a rollback releases the idempotency marker. Without that last one a failed
+checkpoint could leave its ledger row behind, the redelivery would hit `ON CONFLICT DO NOTHING`, and
+the outbox row would never be written *by anyone*: an event lost permanently while every table looks
+consistent. A row-counting end-to-end test cannot tell that apart from success.
+
+The suites apply the shipped schema rather than duplicating DDL, and the orchestrator suite reads its
+file list out of `infrastructure/init/crdb-init.sh` so it cannot drift from what deploys — the order
+matters, since `procurement_schema.sql` declares a foreign key onto `workflows(id)`.
 
 **Tier 3 — full-stack boot proofs.** Each stands up Kafka + CockroachDB + every service with
 `docker compose` and asserts an invariant on the real wire:
@@ -159,6 +172,7 @@ duplicating DDL, so the test cannot drift from what deploys.
 | `test exactly-once delivery` | `scripts/failtest_exactly_once.sh` | a duplicate approval produces no extra outbox rows, ledger entries, or workflows |
 | `test FIFO late-arrival restatement` | `scripts/failtest_fifo_restatement.sh` | a receipt arriving after a later consumption restates the SKU's FIFO cost basis in HLC order |
 | `test DLQ poison-pill routing` | `scripts/failtest_dlq_poison.sh` | an undecodable message is routed to the `.dlq` topic, its source offset is committed, and a valid message behind it still processes — i.e. the partition is not wedged |
+| `test agent exactly-once effect` | `scripts/failtest_agent_exactly_once.sh` | the drafting agent calls a model *outside* the workflow transaction — it must, or a multi-second LLM call would hold a row lock — so node execution is at-least-once by construction. Kills the orchestrator mid-workflow and asserts the resumed run issues no second purchase order: at-least-once execution, exactly-once **effect**, enforced by a deterministic idempotency key rather than by hoping the crash does not happen |
 
 The tiers deliberately overlap on the FIFO restatement invariant — Tier 1 proves the arithmetic in
 milliseconds, Tier 2 proves it survives a real DECIMAL/INT8 round trip, Tier 3 proves it survives the
@@ -246,8 +260,8 @@ services/
 frontend/                  Next.js settlement-ledger dashboard
 infrastructure/            CRDB schema · crdb-init (changefeeds) · kafka-init (topics)
 tools/                     seed (E2E harness) · mock-llm
-scripts/                   e2e + four failure-survival proofs
-.github/workflows/         CI: build/vet/unit · integration · five boot proofs · security scan
+scripts/                   e2e + five failure-survival proofs
+.github/workflows/         CI: build/vet/unit · integration · six boot proofs · security scan
 docs/                      knowledge base (docs/kb), audits, ADR trail
 ```
 

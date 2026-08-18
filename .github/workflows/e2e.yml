@@ -31,6 +31,28 @@ concurrency:
 permissions:
   contents: read
 
+# Go toolchain: pinned to an EXACT patch, deliberately, in every job.
+#
+# It used to read `go-version: '1.25'`, and that floating spec silently broke the security gate.
+# `setup-go` is satisfied by any 1.25.x already in the runner image's tool cache, so it keeps
+# handing back the cached patch instead of fetching the newest one. On 2026-08-14 the
+# actions/go-versions manifest published 1.25.13 at 03:55Z; a run at 12:35Z the SAME DAY still
+# resolved to 1.25.12 and govulncheck failed with seven reachable stdlib CVEs
+# (GO-2026-6218/6091/6090/6089/6088/5972/5026), every one of them "Fixed in: go1.25.13". Re-running
+# would not have fixed it. Only an explicit version does.
+#
+# The pin is 1.26.6 — NOT 1.25.13 — because all six Go builder stages use `FROM golang:1.26`, so a
+# CI pinned to the 1.25 line was scanning a stdlib this project never ships. 1.26.6 and 1.25.13 were
+# published in the same manifest update (the same coordinated security release), so it carries the
+# same seven fixes and closes the CI-vs-artifact divergence at the same time. go.mod stays at
+# `go 1.25.0`: that declares the minimum language version, not the build toolchain.
+#
+# The cost is a maintenance obligation, and it is intentional. Dependabot's github-actions ecosystem
+# bumps action refs only — it will NEVER touch a go-version value — so a future toolchain CVE means
+# this gate goes red until a human bumps these pins. That is the same trade already made for
+# govulncheck@v1.6.0 and Trivy v0.72.0 below: a security gate that silently re-floats is not a gate.
+# Bump all nine sites here and the one in codeql.yml together.
+
 jobs:
   build:
     name: build + vet + unit tests (both modules)
@@ -39,7 +61,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.25'
+          go-version: '1.26.6'
       # Formatting is a gate, not a suggestion. It is checked before anything else because it is the
       # cheapest possible signal and because an unformatted tree is how "we have standards" quietly
       # becomes "we had standards". gofmt is semantics-preserving by construction, so this can never
@@ -89,7 +111,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.25'
+          go-version: '1.26.6'
       # Pinned to an immutable tag, not @latest — same standard the Trivy install below follows.
       # A security job that fetches an unpinned toolchain on every run undercuts its own purpose,
       # and @latest also makes the gate non-reproducible: a scanner bump could turn the build red
@@ -111,7 +133,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.25'
+          go-version: '1.26.6'
       # ubuntu-latest runners ship a running Docker daemon, which is all testcontainers needs.
       # These cover what fakes cannot: single-transaction atomicity, the exactly-once idempotency
       # guard, lot ordering, and DECIMAL/INT8 fidelity through real SQL.
@@ -133,7 +155,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.25'
+          go-version: '1.26.6'
 
       # Single source of truth: scripts/e2e.sh boots the stack, waits for crdb-init, asserts >=3
       # running changefeeds, connects to the SSE stream BEFORE seeding (the gateway has no backlog),
@@ -158,7 +180,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.25'
+          go-version: '1.26.6'
 
       - name: Run pod survival test
         run: bash scripts/failtest_killed_pod.sh
@@ -177,7 +199,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.25'
+          go-version: '1.26.6'
 
       - name: Run exactly-once test
         run: bash scripts/failtest_exactly_once.sh
@@ -196,7 +218,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.25'
+          go-version: '1.26.6'
 
       - name: Run FIFO restatement test
         run: bash scripts/failtest_fifo_restatement.sh
@@ -215,7 +237,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.25'
+          go-version: '1.26.6'
 
       # The only test that exercises the dead-letter path. Every consumer commits its offset ONLY
       # after DLQ delivery is confirmed, so a broken DLQ wedges the partition permanently while every
@@ -234,7 +256,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.25'
+          go-version: '1.26.6'
 
       - name: gosec — Go SAST (both modules)
         run: |
@@ -243,12 +265,12 @@ jobs:
           gosec -no-fail -fmt sarif -out gosec-root.sarif ./...
           ( cd services/viz-gateway && gosec -no-fail -fmt sarif -out ../../gosec-viz.sarif ./... )
       - name: upload gosec (root)
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@v4.37.3
         with:
           sarif_file: gosec-root.sarif
           category: gosec-root
       - name: upload gosec (viz-gateway)
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@v4.37.3
         with:
           sarif_file: gosec-viz.sarif
           category: gosec-viz
@@ -271,7 +293,7 @@ jobs:
             --output trivy.sarif
           # report-only for now; flip --exit-code to 1 once findings are triaged
       - name: upload Trivy
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@v4.37.3
         with:
           sarif_file: trivy.sarif
           category: trivy

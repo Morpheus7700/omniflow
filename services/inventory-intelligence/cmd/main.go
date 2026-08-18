@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"omniflow/internal/platform/health"
 	"omniflow/services/inventory-intelligence/internal/adapters/inbound/kafka"
 	"omniflow/services/inventory-intelligence/internal/adapters/outbound/crdb"
 	"omniflow/services/inventory-intelligence/internal/core/domain"
@@ -63,11 +64,15 @@ func main() {
 	}
 
 	// 4. Start Healthcheck Server
+	// Liveness and readiness are separate endpoints on purpose — see internal/platform/health.
+	// The handler this replaces returned 200 from the moment the port was bound, i.e. before the
+	// pgx pool had opened a single connection, so anything gating traffic on it (Cloud Run, a
+	// readinessProbe, compose's depends_on: service_healthy) would route to an instance that could
+	// not serve. readiness is only reported once wiring below has completed AND the database
+	// answers a bounded ping.
+	probes := health.New(health.DBCheck("crdb", dbpool))
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
-	})
+	probes.Register(mux)
 	srv := &http.Server{
 		Addr:              ":8080",
 		Handler:           mux,
@@ -78,6 +83,11 @@ func main() {
 			slog.Error("healthcheck server failed", "error", err)
 		}
 	}()
+
+	// Everything above is wired: pool open, consumer constructed, HTTP server serving. Only now may
+	// this instance accept traffic. Before this point readiness reports 503 "starting", which is the
+	// window the previous unconditional 200 handler papered over.
+	probes.MarkStarted()
 
 	// 5. Start processing
 	slog.Info("starting inventory-intelligence service")

@@ -10,6 +10,7 @@ import (
 	"omniflow/services/p2p-orchestrator/internal/core/ports"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
 )
@@ -18,14 +19,55 @@ type OrchestratorService struct {
 	store  ports.Checkpointer
 	tracer trace.Tracer
 	dag    *domain.DAG
+
+	// executors maps a node id to the thing that does its work. A node with no entry is a
+	// pass-through checkpoint, which is what lets a partially implemented DAG still run end to end.
+	// This map is the seam the agent fleet fans out along.
+	executors map[string]ports.NodeExecutor
 }
 
-func NewOrchestratorService(s ports.Checkpointer, d *domain.DAG) *OrchestratorService {
-	return &OrchestratorService{
-		store:  s,
-		tracer: otel.Tracer("p2p-orchestrator"),
-		dag:    d,
+func NewOrchestratorService(s ports.Checkpointer, d *domain.DAG, executors map[string]ports.NodeExecutor) *OrchestratorService {
+	if executors == nil {
+		executors = map[string]ports.NodeExecutor{}
 	}
+	return &OrchestratorService{
+		store:     s,
+		tracer:    otel.Tracer("p2p-orchestrator"),
+		dag:       d,
+		executors: executors,
+	}
+}
+
+// executeNode runs a node's executor, if it has one. Nodes without an executor return nil, which
+// the caller treats as a plain checkpoint.
+func (s *OrchestratorService) executeNode(ctx context.Context, wf *domain.Workflow, nodeID string, attempt int) (*domain.NodeResult, error) {
+	exec, ok := s.executors[nodeID]
+	if !ok {
+		return nil, nil
+	}
+
+	ctx, span := s.tracer.Start(ctx, "ExecuteNode")
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("workflow.id", wf.ID),
+		attribute.String("node.id", nodeID),
+		attribute.Int("node.attempt", attempt),
+	)
+
+	result, err := exec.Execute(ctx, domain.NodeRequest{
+		WorkflowID:     wf.ID,
+		EventID:        wf.EventID,
+		NodeID:         nodeID,
+		Attempt:        attempt,
+		TraceParent:    wf.TraceParent,
+		SequenceKey:    wf.SequenceEngineKey,
+		TriggerPayload: wf.TriggerPayload,
+	})
+	if err != nil {
+		span.RecordError(err)
+		return nil, err
+	}
+	return result, nil
 }
 
 func (s *OrchestratorService) ProcessEvent(ctx context.Context, payload []byte, isApproval bool) error {
@@ -49,7 +91,8 @@ func (s *OrchestratorService) handleWorkflowTrigger(ctx context.Context, payload
 		return err
 	}
 
-	wf, err := s.store.LoadOrCreateWorkflow(ctx, event.EventId, event.TraceParent, event.SequenceEngineKey, sortedNodes)
+	// The trigger payload is persisted on the workflow row so any pod can resume a node later.
+	wf, err := s.store.LoadOrCreateWorkflow(ctx, event.EventId, event.TraceParent, event.SequenceEngineKey, sortedNodes, payload)
 	if err != nil {
 		return err
 	}
@@ -203,10 +246,24 @@ func (s *OrchestratorService) drainWorkflow(ctx context.Context, wf *domain.Work
 			return nil
 		}
 
-		// Fast DB tx explicit exit: release FOR UPDATE lock for slow I/O
-		tx.Rollback(ctx)
+		// Fast DB tx explicit exit: release the FOR UPDATE lock before slow I/O. An agent call can
+		// take seconds; holding a row lock across it would serialise every other worker behind a
+		// third party we do not control.
+		if err := tx.Rollback(ctx); err != nil {
+			log.Warn("rollback before node execution failed", "node", nodeID, "error", err)
+		}
 
-		// [EXTERNAL I/O EXECUTION HAPPENS HERE OUTSIDE THE TRANSACTION]
+		// ---- NODE EXECUTION (outside the transaction, therefore at-least-once) ----
+		//
+		// A crash between this call and the checkpoint below re-runs the node on redelivery. We do
+		// not attempt to prevent the duplicate execution — that would require consensus with an
+		// external service — so every side effect a node returns is persisted under a deterministic
+		// idempotency key instead. At-least-once execution, exactly-once effect.
+		result, execErr := s.executeNode(ctx, wf, nodeID, attempt)
+		if execErr != nil {
+			log.Error("node execution failed", "node", nodeID, "attempt", attempt, "error", execErr)
+			return execErr
+		}
 
 		// Re-acquire to checkpoint the node completion
 		tx, err = s.store.AcquireLease(ctx, wf.ID)
@@ -235,9 +292,35 @@ func (s *OrchestratorService) drainWorkflow(ctx context.Context, wf *domain.Work
 		}
 
 		wf.CurrentNodeIndex++
-		outboxPayload := []byte(`{"status":"completed","node":"` + nodeID + `"}`)
 
-		if err := s.store.SaveCheckpoint(ctx, tx, wf, nodeID, attempt, outboxPayload); err != nil {
+		eventType := "NodeTransition"
+		outboxPayload := []byte(`{"status":"completed","node":"` + nodeID + `"}`)
+		if result != nil && len(result.Payload) > 0 {
+			eventType = result.EventType
+			outboxPayload = result.Payload
+		}
+
+		// The side effect, the idempotency ledger row, and the outbox event land in ONE transaction.
+		// That is what makes the emitted event and the durable artifact impossible to disagree.
+		if result != nil && result.Effect != nil {
+			inserted, err := s.store.InsertPurchaseOrder(ctx, tx, wf.ID, nodeID, attempt, result.Effect)
+			if err != nil {
+				if rbErr := tx.Rollback(ctx); rbErr != nil {
+					log.Warn("rollback after failed purchase order insert", "node", nodeID, "error", rbErr)
+				}
+				log.Error("persisting purchase order failed", "node", nodeID, "error", err)
+				return err
+			}
+			if !inserted {
+				// A prior execution of this node already produced the PO. Expected after a crash
+				// between the agent call and this checkpoint — the exactly-once effect working, not
+				// a fault — but it must be visible, because a flood means nodes are re-running.
+				log.Info("purchase order already existed for this node, not re-issued",
+					"node", nodeID, "attempt", attempt, "po_number", result.Effect.PONumber)
+			}
+		}
+
+		if err := s.store.SaveCheckpointTyped(ctx, tx, wf, nodeID, attempt, eventType, outboxPayload); err != nil {
 			tx.Rollback(ctx)
 			log.Error("checkpoint failed on node completion", "node", nodeID, "error", err)
 			return err

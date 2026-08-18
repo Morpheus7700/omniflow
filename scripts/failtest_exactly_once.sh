@@ -171,16 +171,24 @@ OUTBOX_COUNT=$(crdb "SELECT count(*) FROM orchestrator_outbox AS OF SYSTEM TIME 
 
 # Two assertions, because they fail for different reasons and the distinction is diagnostic:
 #   (a) the duplicate added nothing  -> suppression actually happened
-#   (b) the absolute count is 2      -> the DAG emitted the expected outbox rows (two payload-bearing
-#                                       checkpoints: the approved transition and the final one)
+#   (b) the absolute count is 3      -> the DAG emitted the expected outbox rows
 # Without (a) a passing (b) could still hide a duplicate that replaced rather than added.
+#
+# The expected count is one row per PAYLOAD-BEARING checkpoint, so it tracks the DAG:
+#   draft_po       -> PurchaseOrderDrafted (added when the drafting agent became a real node)
+#   human_approval -> the approved transition
+#   final_step     -> the completion transition
+# It was 2 while draft_po was a no-op. If you add another executing node, this number moves with it —
+# that is intended, since a silent change in emitted events is exactly what this is here to catch.
+EXPECTED_OUTBOX_ROWS=3
+
 if [[ "$OUTBOX_COUNT" != "$OUTBOX_BEFORE" ]]; then
     echo "Duplicate approval was NOT suppressed: outbox went from ${OUTBOX_BEFORE} to ${OUTBOX_COUNT} rows"
     exit 1
 fi
 
-if [[ "$OUTBOX_COUNT" != "2" ]]; then
-    echo "Expected exactly 2 rows in outbox (approved + completed), got ${OUTBOX_COUNT}"
+if [[ "$OUTBOX_COUNT" != "$EXPECTED_OUTBOX_ROWS" ]]; then
+    echo "Expected exactly ${EXPECTED_OUTBOX_ROWS} rows in outbox (draft_po + approved + completed), got ${OUTBOX_COUNT}"
     exit 1
 fi
 

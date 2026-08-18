@@ -327,12 +327,27 @@ jobs:
         with:
           go-version: '1.26.6'
 
+      # Pinned, like govulncheck and Trivy. This read `@latest` while the comment on the
+      # govulncheck job three hundred lines up said "Pin the scanner to a tag, not @latest, or a
+      # scanner release can redden the build with no code change" — the rule was written down and
+      # then not applied here. gosec is report-only so an unpinned bump could not break a merge,
+      # but it could silently change the finding count between two runs of identical code, which is
+      # exactly what makes a report untrustworthy. Bump this tag deliberately.
       - name: gosec — Go SAST (both modules)
         run: |
-          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.28.0
           # -no-fail: report findings without gating the build; we triage via the Security tab.
-          gosec -no-fail -fmt sarif -out gosec-root.sarif ./...
-          ( cd services/viz-gateway && gosec -no-fail -fmt sarif -out ../../gosec-viz.sarif ./... )
+          #
+          # -exclude-generated: skip protoc output. contracts/**/*.pb.go carried EIGHT permanent
+          # G103 "use of unsafe calls" warnings that no one can act on — the unsafe is protoc-gen-go's
+          # own, regenerated on every buf build, and hand-editing it is not an option. Findings that
+          # cannot be fixed are not signal; they are the thing that teaches you to skim the list, and
+          # this repo already has that lesson written down ("report-only scanners become unread
+          # scanners"). Five REAL alerts sat unnoticed on master next to that noise until this week.
+          # gosec detects generated files by the standard "Code generated ... DO NOT EDIT." header,
+          # so this excludes exactly the files nobody owns and nothing else.
+          gosec -no-fail -exclude-generated -fmt sarif -out gosec-root.sarif ./...
+          ( cd services/viz-gateway && gosec -no-fail -exclude-generated -fmt sarif -out ../../gosec-viz.sarif ./... )
       - name: upload gosec (root)
         uses: github/codeql-action/upload-sarif@v4.37.3
         with:

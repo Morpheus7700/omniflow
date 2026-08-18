@@ -89,6 +89,30 @@ jobs:
           go vet ./...
           go test ./...
 
+      # The frontend had a `lint` script and nothing that ran it, so `next lint` was a button nobody
+      # pressed: a react-hooks/set-state-in-effect error sat on master unnoticed because the only
+      # frontend signal in CI was `next build` inside the four boot jobs, and a lint error does not
+      # fail a build. That is the same shape as the report-only-scanner problem described on the
+      # govulncheck job below — a check that cannot fail anything is a check nobody reads.
+      #
+      # Type-checking is separate from linting and neither implies the other: `next build` does run
+      # tsc, but only in the boot jobs, which cost ~25 minutes and pull the whole Docker stack to
+      # tell you about a type error. Here it costs seconds and runs on every push.
+      #
+      # Node 26 matches frontend/Dockerfile's builder stage, for the same reason the Go toolchain is
+      # pinned to the version the Go images build with: CI should exercise the runtime that ships.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: frontend lint + typecheck
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run lint
+          npx tsc --noEmit
+
   # Reachability-based CVE scanning, and the ONLY security job here that actually gates.
   #
   # gosec runs `-no-fail` and Trivy runs `--exit-code 0`, both deliberately: they are broad,

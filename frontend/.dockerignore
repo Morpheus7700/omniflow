@@ -1,0 +1,38 @@
+# Build context exclusions for the frontend image.
+#
+# This file has to live HERE, not at the repo root. Docker reads .dockerignore from the root of the
+# BUILD CONTEXT, and compose gives this image `context: ./frontend` (it is the odd one out — the
+# root-module Go services build from `context: .`). So the root .dockerignore, which already lists
+# node_modules and .next, is never consulted for this image.
+#
+# Without these exclusions the Dockerfile silently builds the wrong thing. Its builder stage does:
+#
+#     COPY --from=deps /app/node_modules ./node_modules   <- the tree npm ci installed from the lockfile
+#     COPY . .                                            <- clobbers it with whatever is on the host
+#
+# so a developer's local node_modules overwrites the one built from package-lock.json. That is not
+# hypothetical: it broke every boot script on this machine after Next moved 16.2.x -> 16.3.x. The
+# host had 16.2.11 installed, the lockfile pinned 16.3.1, and `next build` died with
+# `Error: Missing field turbopackMemoryEviction` — the 16.2 binary reading a 16.3 config. Because
+# all four compose boot jobs build this image, the E2E and all four failure proofs failed together,
+# and the error named a Turbopack config field rather than the version skew that caused it.
+#
+# CI never saw it: a fresh checkout has no node_modules and no .next. That is exactly what makes it
+# worth excluding explicitly — the bug only exists on the machines where someone is actually working.
+node_modules
+.next
+
+# Never bake secrets or local state into an image layer.
+.env
+.env.*
+!.env.example
+
+# Noise: nothing below is read by `next build`, and every byte of it is uploaded to the daemon.
+.git
+.gitignore
+Dockerfile
+.dockerignore
+*.md
+npm-debug.log*
+.DS_Store
+coverage

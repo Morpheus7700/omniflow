@@ -1,8 +1,14 @@
 # 06 · Build & Test
 
-The stack, changefeeds, and all failure proofs run in **GitHub Actions**. If the machine you are on
-has no Docker daemon, local verification is build + vet + `go test ./...` + `bash -n`, and CI is the
-first place the compose stack actually boots — so never report a boot result you did not observe.
+The stack, changefeeds, and all failure proofs run in **GitHub Actions**, and as of 2026-08-18 they
+also run **locally** — Docker Desktop is installed on the dev box and `bash scripts/e2e.sh` passes
+there. A local run is the fast pre-check; CI is still the authority, because only CI runs the
+full matrix on a clean machine. On a host with no Docker daemon, local verification is
+build + vet + `go test ./...` + `bash -n` — and there, never report a boot result you did not observe.
+
+**On Windows, run them from Git Bash and let the scripts export `MSYS_NO_PATHCONV=1`** (they do it
+themselves now). Without it every `docker compose exec` that names an in-container absolute path
+exits 127. See [[05-gotchas]].
 
 ## Build / vet (must exit 0)
 ```bash

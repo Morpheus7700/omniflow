@@ -54,6 +54,24 @@ to the schema lock, populated from the workflow in the exactly-once CTE. The `in
 stayed byte-for-byte. This is the ONLY sanctioned deviation from [[03-locked-constraints]].
 
 ## Docker build contexts (monorepo, two Go modules)
+- ⚠️ **`.dockerignore` is read from the BUILD CONTEXT root, not the repo root.** The frontend builds
+  with `context: ./frontend`, so the repo-root `.dockerignore` — which correctly lists `node_modules`
+  and `.next` — is **never consulted for that image**. There must be a `frontend/.dockerignore`, and
+  until 2026-08-19 there wasn't.
+  The consequence is worse than wasted upload. `frontend/Dockerfile` does:
+
+  ```
+  COPY --from=deps /app/node_modules ./node_modules   # the tree npm ci built from package-lock.json
+  COPY . .                                            # clobbers it with whatever the host has
+  ```
+
+  so a developer's local `node_modules` **overwrites the lockfile-built one**. After Next moved
+  16.2.x → 16.3.x this bit hard: host had 16.2.11, lockfile pinned 16.3.1, and `next build` died with
+  `Error: Missing field turbopackMemoryEviction` — the 16.2 binary reading a 16.3 config. Since all
+  four boot jobs build the frontend image, the E2E and every failtest failed together, and the error
+  named a Turbopack config field rather than the version skew behind it.
+  CI never sees this: a fresh checkout has no `node_modules` and no `.next`. **A local `next build`
+  failure that mentions a config field you never set is this — check the two `next` versions first.**
 - **viz-gateway is its OWN module → compose build `context: services/viz-gateway`, `dockerfile: Dockerfile`.**
   Its Dockerfile does `COPY go.mod go.sum` + `go build ./cmd` relative to the module. Giving it the
   repo-root `context: .` (as the root-module services correctly use) makes the build fail with
@@ -316,6 +334,26 @@ so the ignore rule is `versions: [">=7"]`, not `>=6`. Corollary: the boot jobs g
 frontend build proof, which matters because `npm run build` is unusable locally under the AV.
 
 ## Dev-machine traps (not code bugs — they waste hours)
+- **The stack DOES run locally now** (Docker Desktop, since 2026-08-18) — `bash scripts/e2e.sh`
+  passes on this box. Three things had to be true first, and two of them cost a run each:
+- ⚠️ **Git Bash rewrites in-container absolute paths — `export MSYS_NO_PATHCONV=1`.** MSYS2 converts
+  any argument that looks like a POSIX absolute path into a Windows path *before the process sees
+  it*, so `docker compose exec -T kafka /opt/kafka/bin/kafka-topics.sh` arrives inside the container
+  as `C:/Program Files/Git/opt/kafka/bin/kafka-topics.sh` and the step exits **127**. Proof:
+  `docker run --rm alpine echo /opt/x` prints `C:/Program Files/Git/opt/x`; with the variable set it
+  prints `/opt/x`. All five `scripts/*.sh` now export it themselves; the variable is ignored on
+  Linux/macOS, which is why CI never saw this. A 127 from a boot script on Windows is this, until
+  proven otherwise.
+- **Nothing else may hold port 3000** (or 8081, 9092, 26257). A `next dev` left running takes 3000,
+  and compose then fails the frontend container with `ports are not available: ... bind: Only one
+  usage of each socket address`. The stack boots *fine* right up to that container, so the failure
+  reads as a frontend bug rather than a port clash. Kill the dev server before booting the stack.
+- ⚠️ **`bash script.sh | tail` DESTROYS the exit code.** A pipeline's status is its LAST command, so
+  `tail` (always 0) reports success for a script that failed — the same trap as the `git push | tail`
+  note below, and it produced a false "E2E PASSED" here. Redirect instead and capture the status:
+  `bash scripts/e2e.sh > run.log 2>&1; RC=$?`. Piping also truncates away the assertion lines you
+  need. The tell that a run really failed: `e2e.sh` dumps `docker compose logs` ONLY on non-zero, so
+  a wall of container logs means failure no matter what the exit code appears to say.
 - **`jq` is NOT installed in the Git-Bash environment.** Any script or Monitor piping through `jq`
   silently produces nothing every iteration and looks like "no events yet". Use `gh … --jq` (gh ships
   jq internally) or `--template`.

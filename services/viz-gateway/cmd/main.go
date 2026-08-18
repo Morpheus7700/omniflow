@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"omniflow/services/viz-gateway/internal/api"
+	"omniflow/services/viz-gateway/internal/health"
 	"omniflow/services/viz-gateway/internal/kafka"
 	"omniflow/services/viz-gateway/internal/repository"
 
@@ -88,6 +89,13 @@ func main() {
 	mux.Handle("/api/stream", withCORS(http.HandlerFunc(sseBroker.StreamHandler)))
 	mux.Handle("/api/replay", withCORS(http.HandlerFunc(api.NewReplayHandler(repo).HandleReplay)))
 
+	// viz-gateway had NO health endpoint at all — not even the unconditional "/" the other three
+	// carried — so nothing could distinguish "SSE broker running" from "process bound a port". It
+	// is the one service the browser talks to directly, which makes its readiness the difference
+	// between an empty dashboard and a dashboard that is honestly unavailable.
+	probes := health.New(health.DBCheck("crdb", db))
+	probes.Register(mux)
+
 	server := &http.Server{
 		Addr:              ":8080",
 		Handler:           mux,
@@ -103,6 +111,10 @@ func main() {
 	}()
 
 	// Graceful shutdown
+	// Broker running, consumer wired, server serving: only now is this instance able to answer a
+	// stream request with real data.
+	probes.MarkStarted()
+
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan

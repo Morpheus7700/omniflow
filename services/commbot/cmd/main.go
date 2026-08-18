@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"omniflow/internal/platform/health"
 	inkafka "omniflow/services/commbot/internal/adapters/inbound/kafka"
 	"omniflow/services/commbot/internal/adapters/outbound/crdb"
 	"omniflow/services/commbot/internal/adapters/outbound/llm"
@@ -83,11 +84,15 @@ func run() error {
 	}
 
 	// ── Healthcheck Server (Cloud Run) ───────────────────────────────────────
+	// Liveness and readiness are separate endpoints on purpose — see internal/platform/health.
+	// The handler this replaces returned 200 from the moment the port was bound, i.e. before the
+	// pgx pool had opened a single connection, so anything gating traffic on it (Cloud Run, a
+	// readinessProbe, compose's depends_on: service_healthy) would route to an instance that could
+	// not serve. readiness is only reported once wiring below has completed AND the database
+	// answers a bounded ping.
+	probes := health.New(health.DBCheck("crdb", pool))
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
-	})
+	probes.Register(mux)
 	srv := &http.Server{
 		Addr:              ":8080",
 		Handler:           mux,
@@ -98,6 +103,11 @@ func run() error {
 			slog.Error("healthcheck server failed", "error", err)
 		}
 	}()
+
+	// Everything above is wired: pool open, consumer constructed, HTTP server serving. Only now may
+	// this instance accept traffic. Before this point readiness reports 503 "starting", which is the
+	// window the previous unconditional 200 handler papered over.
+	probes.MarkStarted()
 
 	slog.Info("commbot starting", "input_topic", cfg.inputTopic, "bootstrap", cfg.kafkaBootstrap)
 	adapter.Start(ctx) // blocks until ctx is cancelled

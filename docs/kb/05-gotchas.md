@@ -54,6 +54,24 @@ to the schema lock, populated from the workflow in the exactly-once CTE. The `in
 stayed byte-for-byte. This is the ONLY sanctioned deviation from [[03-locked-constraints]].
 
 ## Docker build contexts (monorepo, two Go modules)
+- ⚠️ **`.dockerignore` is read from the BUILD CONTEXT root, not the repo root.** The frontend builds
+  with `context: ./frontend`, so the repo-root `.dockerignore` — which correctly lists `node_modules`
+  and `.next` — is **never consulted for that image**. There must be a `frontend/.dockerignore`, and
+  until 2026-08-19 there wasn't.
+  The consequence is worse than wasted upload. `frontend/Dockerfile` does:
+
+  ```
+  COPY --from=deps /app/node_modules ./node_modules   # the tree npm ci built from package-lock.json
+  COPY . .                                            # clobbers it with whatever the host has
+  ```
+
+  so a developer's local `node_modules` **overwrites the lockfile-built one**. After Next moved
+  16.2.x → 16.3.x this bit hard: host had 16.2.11, lockfile pinned 16.3.1, and `next build` died with
+  `Error: Missing field turbopackMemoryEviction` — the 16.2 binary reading a 16.3 config. Since all
+  four boot jobs build the frontend image, the E2E and every failtest failed together, and the error
+  named a Turbopack config field rather than the version skew behind it.
+  CI never sees this: a fresh checkout has no `node_modules` and no `.next`. **A local `next build`
+  failure that mentions a config field you never set is this — check the two `next` versions first.**
 - **viz-gateway is its OWN module → compose build `context: services/viz-gateway`, `dockerfile: Dockerfile`.**
   Its Dockerfile does `COPY go.mod go.sum` + `go build ./cmd` relative to the module. Giving it the
   repo-root `context: .` (as the root-module services correctly use) makes the build fail with

@@ -1,8 +1,26 @@
 # 05 · Gotchas & Hard-Won Findings
 
 **The highest-value note.** Every one of these cost a debugging round. Read before editing scripts,
-consumers, or schema. Most are things [[01-working-loop|Antigravity]] gets wrong because it can't run
-the stack.
+consumers, or schema.
+
+> **Two kinds of entry live here, and they age differently.**
+>
+> Most are **invariants** — how CockroachDB parses a CTE, what franz-go does with topic creation,
+> why `bash script.sh | tail` destroys an exit code. Those stay true.
+>
+> A few are **observations about one machine or one moment**: which antivirus was installed, whether
+> Docker was available, how many rows a DAG emits. Those expire, silently, and a reader cannot tell
+> them apart from the invariants — which is precisely how this file came to assert five wrong things
+> at once on 2026-08-19: that Quick Heal was throttling builds (it had been uninstalled), that no
+> local Docker existed (it does), that Kafka was pinned at 3.8.0 (it is 4.3.1), and that a completed
+> workflow emits exactly 2 outbox rows (3, since `draft_po`). One of them was repeated to the human
+> as current fact during a working session before anyone checked.
+>
+> So: **environment- and count-dependent claims carry a date, and a way to re-derive them.** If an
+> entry tells you something about *this machine* or *the current shape of the system* rather than
+> about how a tool behaves, verify it before you rely on it — the command to do so should be in the
+> entry itself. An unverifiable claim in this file is worse than no claim, because this is the file
+> people trust.
 
 ## Infra / scripting (recurring in every failtest)
 - **DB compose service name is `cockroachdb`, NOT `crdb`.** `docker compose exec -T cockroachdb …`.
@@ -37,7 +55,8 @@ the real changefeed drive everything downstream. CommBot's classify hop is cover
 
 ### HITL suspend needs an approval
 The orchestrator DAG (`human_approval` → `final_step`) **suspends** at `human_approval` and writes no
-outbox row. It only emits `orchestrator_outbox` rows (approved + completed = 2 rows) after an approval
+outbox row. It only emits `orchestrator_outbox` rows (one per payload-bearing node; see
+`EXPECTED_OUTBOX_ROWS`) after an approval
 event on `omniflow.p2p.approval.v1`. The seeder polls `workflows.state='SUSPENDED'` before approving
 (deterministic; avoids racing the changefeed).
 
@@ -198,8 +217,12 @@ Rule: poll for the real terminal condition (`SELECT state … == 'COMPLETED'`, o
 with a generous timeout, and print the last observed state when the timeout fires. A bare `timeout`
 under `set -e` exits 124 with no message and is indistinguishable from a crash.
 
-Two payload-bearing `SaveCheckpoint` calls exist, so a completed workflow has **exactly 2**
-`orchestrator_outbox` rows. When asserting suppression, check BOTH that the count equals the
+Payload-bearing `SaveCheckpoint` calls are what write outbox rows, so the count equals the number of
+payload-bearing nodes in the DAG — **3 since `draft_po` landed** (2026-08-19), not the 2 this note
+claimed while the DAG had two nodes. `scripts/failtest_exactly_once.sh` reads it from
+`EXPECTED_OUTBOX_ROWS`; treat that variable as the source of truth and this sentence as commentary.
+The number changes whenever a payload-bearing node is added — which is exactly how this note went
+stale, and why the assertion now lives in a variable instead of a literal. When asserting suppression, check BOTH that the count equals the
 pre-duplicate baseline (suppression happened) AND its absolute value (the DAG emitted what it should)
 — either alone can pass for the wrong reason.
 
@@ -371,11 +394,19 @@ frontend build proof, which matters because `npm run build` is unusable locally 
 - **Read the accessibility tree sceptically.** Its dump showed one form input with a label and its
   identical sibling without — the real DOM had both (`input.labels` proved it). Verify a suspected
   a11y bug against the DOM before "fixing" it.
-- **Quick Heal real-time scanning throttles the Go build cache into uselessness.** After the
-  testcontainers dependency tree landed (docker/moby/containerd/grpc), a *trivial* single-package
-  `go build` exceeded 120s where it previously took seconds — the AV re-scans thousands of unseen
-  files on every compile. Exclude `%LOCALAPPDATA%\go-build` and `%USERPROFILE%\go\pkg\mod`. Until then
-  verify locally with `gofmt -e -l` (parse-only) and let CI compile — it does both modules in ~17s.
+- ~~**Quick Heal real-time scanning throttles the Go build cache into uselessness.**~~
+  **RESOLVED 2026-08-19 — Quick Heal has been uninstalled.** Windows Defender is now the only
+  registered scanner and it does *not* reproduce this. Measured on the current machine:
+
+  ```
+  go clean -cache && go build ./...   ->  67s      (cold, includes module download)
+  go build ./...                      ->   6s      (warm)
+  ```
+
+  That is healthy. The exclusion advice below it was worthless once the cause was gone, and it was
+  repeated as current fact from this file during a session — which is the failure mode this whole
+  note exists to prevent. **If a build feels slow now, measure it before blaming an AV**; the last
+  slow build here was a one-time module fetch after the OTel/gRPC bump, not scanning.
 - Killing a background `go build` leaves zombie `go.exe` entries that `taskkill` reports as
   "no running instance". They are harmless and are NOT holding cache locks — don't chase them.
 

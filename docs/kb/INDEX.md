@@ -52,26 +52,25 @@ update when something bites you.
 - `.github/CODEOWNERS` — maps each load-bearing path to the test that guards it.
 
 ## One-line status (update every session)
-**As of 2026-08-18:** `master` is branch-protected (9 required checks, `strict: true`, admins
-included) and the full spine is proven on real infrastructure in CI: seed → changefeed →
-orchestrator DAG → HITL suspend → approval → resume → changefeed → viz-gateway → SSE, with the HLC
-key intact, plus four failure-survival proofs (durable resume, exactly-once suppression, FIFO
-late-arrival restatement, DLQ poison-pill).
+**As of 2026-08-19:** `master` is branch-protected (9 required checks, `strict: true`, admins
+included) and green. The spine is proven on real infrastructure in CI *and now locally* — Docker
+Desktop is installed on the dev box and `bash scripts/e2e.sh` passes there (seed → changefeed → DAG →
+HITL → SSE, HLC key intact), alongside **five** failure-survival proofs: durable resume,
+exactly-once suppression, FIFO late-arrival restatement, DLQ poison-pill, and agent exactly-once
+effect.
 
-**The CI security gate was disarmed and is being repaired.** `govulncheck` floated its toolchain
-(`go-version: '1.25'`), so `setup-go` kept serving the runner's cached 1.25.12 and the gate failed
-on seven reachable stdlib CVEs fixed in 1.25.13. All ten sites (nine in `e2e.yml`, one in
-`codeql.yml`) are now pinned to an exact `1.26.6`, which also aligns CI with the `golang:1.26`
-builder stages it had silently diverged from. See [[05-gotchas]].
+**The dependency queue is drained: 0 open Dependabot PRs** (was 12). `govulncheck` reports **0**
+reachable CVEs after the toolchain was pinned to an exact 1.26.6 — it had been floating at `'1.25'`,
+which resolves from the runner's tool cache and had silently served a stdlib with seven reachable
+CVEs. Trivy alerts: **0** (was 14).
 
-Consequence to remember: every green check dated **2026-08-07** predates those CVEs and is **not**
-clearance. Re-run every open PR against the new baseline before merging anything.
+Landed since: real `/healthz` + `/readyz` on all four services (the old handler returned 200 before
+the pgx pool opened a connection, so anything gating on it routed traffic to an instance that could
+not serve); eight integration tests pinning the exactly-once CTE in `SaveCheckpoint`, which had none;
+an explicit domain→proto enum mapping replacing a numeric cast that assumed a hand-written `iota`
+block and a generated proto enum would stay aligned forever.
 
-Dependency queue: 12 open Dependabot PRs, and the root-Go ecosystem has hit
-`open-pull-requests-limit` — its latest job *errored* ("cannot open any more pull requests"), so
-new updates are being suppressed, not queued. Dependabot **alerts** are also disabled repo-wide
-(version updates only). 44 open code-scanning alerts, of which nine HIGH `x/crypto/ssh` findings
-should clear with the consolidated OTel PR #42 (`x/crypto` 0.51.0 → 0.54.0).
-
-Next: outbox `SaveCheckpoint` has no Go test — the exactly-once claim rests on it and is currently
-proven only by a full stack boot. See [[04-progress-ledger]].
+Next: no blocking work. Optional, and needing a human: enable **Dependabot alerts** (disabled
+repo-wide — version updates run, but nothing is raised *because* an advisory landed), and add
+`test agent exactly-once effect` to the required-checks list, where it is currently advisory.
+See [[04-progress-ledger]].

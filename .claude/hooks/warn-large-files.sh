@@ -16,6 +16,11 @@ if [ -z "$FILE_PATH" ]; then
   exit 0
 fi
 
+# Windows sends absolute paths with backslashes. Every directory glob below is written with
+# forward slashes, so normalise separators first or none of them ever match and this hook
+# becomes a no-op that still reports success.
+FILE_PATH=$(printf '%s' "$FILE_PATH" | tr '\\' '/')
+
 # Block dependency and build directories
 case "$FILE_PATH" in
   node_modules/*|*/node_modules/*)

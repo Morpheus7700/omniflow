@@ -21,6 +21,12 @@ INPUT=$(cat)
 FILE_PATH=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null || true)
 [ -z "$FILE_PATH" ] && exit 0
 
+# Windows sends absolute paths with backslashes ("C:\Users\...\.claude\hooks\x.sh"). Every
+# directory glob below is written with forward slashes, so normalise separators first. Without
+# this the directory rules match nothing and the hook is a no-op that still reports success —
+# the basename rules keep working, which is what makes the failure so easy to miss.
+FILE_PATH=$(printf '%s' "$FILE_PATH" | tr '\\' '/')
+
 BASENAME=$(basename -- "$FILE_PATH")
 # Case-insensitive comparison copy
 BASENAME_LC=$(printf '%s' "$BASENAME" | tr '[:upper:]' '[:lower:]')

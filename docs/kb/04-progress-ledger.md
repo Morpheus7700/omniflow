@@ -68,9 +68,18 @@ Nothing is blocking. In rough order of value:
   alone. And `test agent exactly-once effect` passes but is not among the 9 required contexts, so
   it is advisory.
 - **Bound the remaining DB/Kafka calls** with `context.WithTimeout`, and give the service binaries a
-  self-probe mode so compose healthchecks become real.
-- **10 gosec G104 warnings** (unhandled errors) in code we own — the only code-scanning findings
-  left after generated files were excluded. Low severity, but they are now the whole list.
+  self-probe mode so compose healthchecks become real. *Both HTTP shutdowns are now bounded* —
+  viz-gateway's was the urgent one, because it serves SSE and an unbounded `Shutdown` waits for a
+  stream that never ends, turning every graceful stop into a SIGKILL. The DB and Kafka calls and the
+  self-probe mode are still open.
+- ~~**10 gosec G104 warnings**~~ **Done** — zero G104 in both modules. Seven were `tx.Rollback(ctx)`
+  on orchestrator error paths, fixed by applying the `if rbErr := ...` convention the same file
+  already used twice rather than by writing `_ =`, which would have satisfied the scanner without
+  answering it. A failed rollback means the transaction still holds its `FOR UPDATE` lock.
+- **4 gosec G706 warnings** (log injection, `tools/seed/main.go`) — these are now the whole list, and
+  the previous claim that G104 *was* the whole list is corrected here. A dev-only CLI logging its own
+  flags, so the taint is argv; low value to fix, but it should be *chosen*, not inherited from a
+  stale sentence.
 
 ## Backlog (not blocking)
 Lease-TTL reclaim enforcement (`owner_pod`/`lease_expires_at` written but not reaped); human-approval

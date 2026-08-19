@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -66,7 +67,10 @@ func run() error {
 	dsn := env("CRDB_DSN", "postgres://root@localhost:26257/omniflow?sslmode=disable")
 
 	if action == "approve-only" {
-		eventID := os.Getenv("SEED_EVENT_ID")
+		eventID, err := eventIDFromEnv()
+		if err != nil {
+			return err
+		}
 		if eventID == "" {
 			return errors.New("SEED_EVENT_ID is required for approve-only")
 		}
@@ -87,9 +91,11 @@ func run() error {
 		return nil
 	}
 
-	eventID := os.Getenv("SEED_EVENT_ID")
+	eventID, err := eventIDFromEnv()
+	if err != nil {
+		return err
+	}
 	if eventID == "" {
-		var err error
 		eventID, err = uuidV4()
 		if err != nil {
 			return fmt.Errorf("generate event id: %w", err)
@@ -108,7 +114,7 @@ func run() error {
 	traceParent := env("SEED_TRACE_PARENT", newTraceParent())
 	aggregateID := env("SEED_VENDOR_ID", "VENDOR-ACME-001")
 
-	log.Printf("seeding mode=%s event_id=%s sequence_engine_key=%d", mode, eventID, seqKey)
+	log.Printf("seeding mode=%s event_id=%s sequence_engine_key=%d", logSafe(mode), eventID, seqKey)
 
 	conn, err := pgx.Connect(ctx, dsn)
 	if err != nil {
@@ -174,7 +180,7 @@ func seedOutbox(ctx context.Context, conn *pgx.Conn, eventID, traceParent, aggre
 	if err != nil {
 		return fmt.Errorf("insert commbot_outbox: %w", err)
 	}
-	log.Printf("inserted commbot_outbox row (aggregate_id=%s) — changefeed will emit to %s", aggregateID, "omniflow.orchestration.v1")
+	log.Printf("inserted commbot_outbox row (aggregate_id=%s) — changefeed will emit to %s", logSafe(aggregateID), "omniflow.orchestration.v1")
 	return nil
 }
 
@@ -217,7 +223,7 @@ func produce(ctx context.Context, brokers []string, topic, key string, value []b
 	if err := cl.ProduceSync(ctx, rec).FirstErr(); err != nil {
 		return fmt.Errorf("produce to %s: %w", topic, err)
 	}
-	log.Printf("produced to %s (key=%s, %d bytes)", topic, key, len(value))
+	log.Printf("produced to %s (key=%s, %d bytes)", logSafe(topic), logSafe(key), len(value))
 	return nil
 }
 
@@ -232,7 +238,7 @@ func waitForSuspended(ctx context.Context, conn *pgx.Conn, eventID string) error
 		case err == nil && state == "SUSPENDED":
 			return nil
 		case err == nil:
-			log.Printf("workflow state=%s, waiting for SUSPENDED…", state)
+			log.Printf("workflow state=%s, waiting for SUSPENDED…", logSafe(state))
 		case errors.Is(err, pgx.ErrNoRows):
 			log.Printf("workflow not created yet, waiting…")
 		default:
@@ -303,6 +309,38 @@ func env(k, def string) string {
 		return v
 	}
 	return def
+}
+
+// uuidRe matches the canonical 8-4-4-4-12 form produced by uuidV4.
+var uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// eventIDFromEnv reads SEED_EVENT_ID and rejects anything that is not a UUID.
+//
+// This is a boundary check, not decoration. The seeder writes two machine-readable markers to
+// stdout, and scripts/e2e.sh recovers the key it asserts on with
+//
+//	grep '^SEED_SEQUENCE_ENGINE_KEY=' "$SEED_LOG" | cut -d= -f2
+//
+// The event id is printed one line above that marker. An id containing a newline would let the
+// caller fabricate a SEED_SEQUENCE_ENGINE_KEY line of their choosing, and the end-to-end proof
+// would then assert on a key nothing ever produced — a green run proving nothing. Constraining the
+// id to a UUID removes the whole class rather than escaping one character of it.
+func eventIDFromEnv() (string, error) {
+	v := os.Getenv("SEED_EVENT_ID")
+	if v == "" {
+		return "", nil
+	}
+	if !uuidRe.MatchString(v) {
+		return "", fmt.Errorf("SEED_EVENT_ID must be a UUID, got %q", logSafe(v))
+	}
+	return v, nil
+}
+
+// logSafe escapes the characters that could forge a new log record. Every input to this tool comes
+// from the environment, and its stdout is parsed by scripts/e2e.sh (see eventIDFromEnv). Values
+// that cannot be constrained to a fixed shape the way the event id can are escaped here instead.
+func logSafe(s string) string {
+	return strings.NewReplacer("\r", `\r`, "\n", `\n`).Replace(s)
 }
 
 func seedInventory(ctx context.Context, brokers []string, eventID, traceParent, aggregateID string, seqKey uint64) error {

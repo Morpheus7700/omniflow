@@ -106,6 +106,18 @@ services:
       # Used only by the `email` seed mode; harmless when the default `outbox` mode is used.
       LITELLM_URL: "http://mock-llm:4000"
       OBJECT_STORE_HOSTS: "storage.googleapis.com,raw.githubusercontent.com"
+    # Exec form + the binary's own -probe mode, NOT CMD-SHELL. These images are
+    # gcr.io/distroless/static:nonroot: no shell, no curl, no wget, so the usual
+    # `["CMD-SHELL", "curl -f .../readyz"]` cannot execute at all. The service binary is the one
+    # executable guaranteed to be in the image. See internal/platform/health/probe.go.
+    healthcheck:
+      test: ["CMD", "/svc", "-probe"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      # Readiness stays 503 until the consumers are wired, which is after the Kafka client has
+      # connected. start_period keeps those honest early failures from counting as retries.
+      start_period: 15s
 
   inventory-intelligence:
     build:
@@ -117,6 +129,13 @@ services:
     environment:
       CRDB_DSN: "postgres://root@cockroachdb:26257/omniflow?sslmode=disable"
       KAFKA_BROKERS: "kafka:29092"
+    # See the commbot healthcheck for why this is CMD and not CMD-SHELL.
+    healthcheck:
+      test: ["CMD", "/svc", "-probe"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
 
   p2p-orchestrator:
     build:
@@ -142,6 +161,13 @@ services:
       AGENT_AUTONOMOUS_CEILING_MICRO_USD: "50000000000"    # $50,000 PO value needs a human
       AGENT_RATE_RPS: "2"
       AGENT_RATE_BURST: "4"
+    # See the commbot healthcheck for why this is CMD and not CMD-SHELL.
+    healthcheck:
+      test: ["CMD", "/svc", "-probe"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
 
   viz-gateway:
     build:
@@ -157,6 +183,13 @@ services:
       DATABASE_URL: "postgres://root@cockroachdb:26257/omniflow?sslmode=disable"
       CRDB_DSN: "postgres://root@cockroachdb:26257/omniflow?sslmode=disable"
       KAFKA_BROKERS: "kafka:29092"
+    # See the commbot healthcheck for why this is CMD and not CMD-SHELL.
+    healthcheck:
+      test: ["CMD", "/svc", "-probe"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
     ports:
       - "8081:8080"
 

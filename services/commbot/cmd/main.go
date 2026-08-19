@@ -28,6 +28,11 @@ import (
 )
 
 func main() {
+	// Container healthcheck mode. Checked before anything else so the probe never depends on the
+	// configuration a running service needs — see internal/platform/health/probe.go.
+	if health.RunProbe(os.Args[1:]) {
+		return
+	}
 	if err := run(); err != nil {
 		slog.Error("commbot exited with error", "error", err)
 		os.Exit(1)

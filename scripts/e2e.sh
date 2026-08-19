@@ -120,6 +120,35 @@ if [ "${RUNNING:-0}" -lt 3 ]; then
   exit 1
 fi
 
+log "Waiting for the four app services to report READY (not merely started)"
+# Until the services grew a healthcheck this step did not exist, and nothing here waited for them
+# at all: the run went straight from crdb-init to seeding and relied on the seeder's own 60s poll
+# for SUSPENDED to absorb the startup race. That hid the difference between "the orchestrator was
+# slow to connect" and "the orchestrator never came up", because both surfaced identically as the
+# seeder timing out on a workflow that never suspended.
+#
+# The images are distroless, so the healthcheck runs the service binary's own -probe mode against
+# its /readyz — which is 503 until the pgx pool is live AND the Kafka consumers are wired.
+for svc in commbot inventory-intelligence p2p-orchestrator viz-gateway; do
+  DEADLINE=$(( $(date +%s) + 120 ))
+  while :; do
+    CID="$(docker compose ps -q "$svc")"
+    STATUS="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$CID" 2>/dev/null || echo unknown)"
+    case "$STATUS" in
+      healthy) echo "  $svc: healthy"; break ;;
+      none|unknown)
+        fail "$svc reports no healthcheck — the compose healthcheck is missing or the image has no /svc"
+        exit 1 ;;
+    esac
+    if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+      fail "$svc never became healthy (last status: $STATUS)"
+      docker compose logs --tail 50 "$svc" || true
+      exit 1
+    fi
+    sleep 2
+  done
+done
+
 # Connect the SSE consumer BEFORE seeding. The gateway broadcasts live to connected clients only
 # (no server-side backlog), so a late connect would miss the projection.
 log "Opening SSE stream: $SSE_URL"

@@ -120,5 +120,15 @@ func main() {
 	<-sigChan
 
 	slog.Info("Shutting down gracefully...")
-	server.Shutdown(ctx)
+
+	// Bounded, and on a FRESH context rather than the app one. Two reasons, both of which bite here
+	// specifically: `ctx` is cancelled by the deferred cancel() as soon as main returns, and passing
+	// an unbounded context to Shutdown means waiting for every open connection to drain on its own.
+	// This process serves SSE — a stream has no natural end, so a client that never disconnects
+	// would hold shutdown open forever and the container would die by SIGKILL instead.
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		slog.Error("graceful shutdown did not finish cleanly", "error", err)
+	}
 }

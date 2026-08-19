@@ -185,7 +185,9 @@ func (s *OrchestratorService) drainWorkflow(ctx context.Context, wf *domain.Work
 
 			wf.State = domain.StateCompleted
 			if err := s.store.SaveCheckpoint(ctx, tx, wf, "", 0, nil); err != nil {
-				tx.Rollback(ctx)
+				if rbErr := tx.Rollback(ctx); rbErr != nil {
+					log.Warn("rollback after failed completion checkpoint", "error", rbErr)
+				}
 				log.Error("checkpoint failed while completing", "error", err)
 				return err
 			}
@@ -206,7 +208,9 @@ func (s *OrchestratorService) drainWorkflow(ctx context.Context, wf *domain.Work
 		attempt := 1
 		executed, err := s.store.CheckIdempotency(ctx, wf.ID, nodeID, attempt)
 		if err != nil {
-			tx.Rollback(ctx)
+			if rbErr := tx.Rollback(ctx); rbErr != nil {
+				log.Warn("rollback after failed idempotency check", "node", nodeID, "error", rbErr)
+			}
 			log.Error("idempotency check failed", "node", nodeID, "error", err)
 			return err
 		}
@@ -216,7 +220,9 @@ func (s *OrchestratorService) drainWorkflow(ctx context.Context, wf *domain.Work
 			// not advancing.
 			wf.CurrentNodeIndex++
 			if err := s.store.SaveCheckpoint(ctx, tx, wf, nodeID, attempt, nil); err != nil {
-				tx.Rollback(ctx)
+				if rbErr := tx.Rollback(ctx); rbErr != nil {
+					log.Warn("rollback after failed replay checkpoint", "node", nodeID, "error", rbErr)
+				}
 				log.Error("checkpoint failed on replayed node", "node", nodeID, "error", err)
 				return err
 			}
@@ -234,7 +240,9 @@ func (s *OrchestratorService) drainWorkflow(ctx context.Context, wf *domain.Work
 			wf.LeaseExpiresAt = time.Now().Add(24 * time.Hour)
 
 			if err := s.store.SaveCheckpoint(ctx, tx, wf, "", 0, nil); err != nil {
-				tx.Rollback(ctx)
+				if rbErr := tx.Rollback(ctx); rbErr != nil {
+					log.Warn("rollback after failed suspend checkpoint", "error", rbErr)
+				}
 				log.Error("checkpoint failed while suspending", "error", err)
 				return err
 			}
@@ -278,12 +286,16 @@ func (s *OrchestratorService) drainWorkflow(ctx context.Context, wf *domain.Work
 		// never completes.
 		latestWf, err := s.store.LoadWorkflowByEventIDTx(ctx, tx, wf.EventID)
 		if err != nil {
-			tx.Rollback(ctx)
+			if rbErr := tx.Rollback(ctx); rbErr != nil {
+				log.Warn("rollback after failed re-fetch under lease", "node", nodeID, "error", rbErr)
+			}
 			log.Error("re-fetch under lease failed", "node", nodeID, "error", err)
 			return err
 		}
 		if latestWf.CurrentNodeIndex != wf.CurrentNodeIndex {
-			tx.Rollback(ctx)
+			if rbErr := tx.Rollback(ctx); rbErr != nil {
+				log.Warn("rollback while yielding to another worker", "node", nodeID, "error", rbErr)
+			}
 			// Another pod advanced this workflow. Benign, but no longer silent: repeated occurrences
 			// indicate two pods contending for the same workflow.
 			log.Info("yielding, another worker advanced this workflow",
@@ -321,7 +333,9 @@ func (s *OrchestratorService) drainWorkflow(ctx context.Context, wf *domain.Work
 		}
 
 		if err := s.store.SaveCheckpointTyped(ctx, tx, wf, nodeID, attempt, eventType, outboxPayload); err != nil {
-			tx.Rollback(ctx)
+			if rbErr := tx.Rollback(ctx); rbErr != nil {
+				log.Warn("rollback after failed completion checkpoint", "node", nodeID, "error", rbErr)
+			}
 			log.Error("checkpoint failed on node completion", "node", nodeID, "error", err)
 			return err
 		}

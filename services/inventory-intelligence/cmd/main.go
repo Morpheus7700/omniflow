@@ -93,5 +93,12 @@ func main() {
 	slog.Info("starting inventory-intelligence service")
 	consumer.Start(ctx)
 
-	srv.Shutdown(context.Background())
+	// Bounded: an unbounded Shutdown waits for every in-flight request to finish on its own, so a
+	// single wedged handler turns a graceful stop into a SIGKILL. The error is logged rather than
+	// discarded — "shutdown timed out" is the difference between a clean stop and a dropped request.
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		slog.Error("graceful shutdown did not finish cleanly", "error", err)
+	}
 }

@@ -8,12 +8,12 @@ import (
 	"os/signal"
 	"syscall"
 
+	"omniflow/internal/platform/crdbpool"
 	"omniflow/internal/platform/health"
 	"omniflow/services/inventory-intelligence/internal/adapters/inbound/kafka"
 	"omniflow/services/inventory-intelligence/internal/adapters/outbound/crdb"
 	"omniflow/services/inventory-intelligence/internal/core/domain"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"strings"
 	"time"
@@ -34,7 +34,8 @@ func main() {
 	if dbURL == "" {
 		dbURL = "postgres://root@localhost:26257/omniflow?sslmode=disable"
 	}
-	dbpool, err := pgxpool.New(ctx, dbURL)
+	// crdbpool, not pgxpool.New: it applies a statement_timeout so no query can hang forever.
+	dbpool, err := crdbpool.New(ctx, dbURL)
 	if err != nil {
 		slog.Error("failed to connect to db", "error", err)
 		os.Exit(1)

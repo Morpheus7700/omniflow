@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"omniflow/internal/platform/aigov"
+	"omniflow/internal/platform/crdbpool"
 	"omniflow/internal/platform/health"
 	"omniflow/services/p2p-orchestrator/internal/adapters/inbound/kafka"
 	"omniflow/services/p2p-orchestrator/internal/adapters/outbound/agent"
@@ -18,7 +19,6 @@ import (
 	"omniflow/services/p2p-orchestrator/internal/core/domain"
 	"omniflow/services/p2p-orchestrator/internal/core/ports"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"strconv"
 	"strings"
@@ -60,7 +60,8 @@ func main() {
 	if dsn == "" {
 		dsn = "postgres://root@localhost:26257/defaultdb?sslmode=disable"
 	}
-	pool, err := pgxpool.New(ctx, dsn)
+	// crdbpool, not pgxpool.New: it applies a statement_timeout so no query can hang forever.
+	pool, err := crdbpool.New(ctx, dsn)
 	if err != nil {
 		slog.Error("Failed to connect to CRDB", "error", err)
 		os.Exit(1)

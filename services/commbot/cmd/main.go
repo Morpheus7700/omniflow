@@ -11,13 +11,13 @@ import (
 	"syscall"
 	"time"
 
+	"omniflow/internal/platform/crdbpool"
 	"omniflow/internal/platform/health"
 	inkafka "omniflow/services/commbot/internal/adapters/inbound/kafka"
 	"omniflow/services/commbot/internal/adapters/outbound/crdb"
 	"omniflow/services/commbot/internal/adapters/outbound/llm"
 	"omniflow/services/commbot/internal/core/domain"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
@@ -58,7 +58,8 @@ func run() error {
 	}()
 
 	// ── CockroachDB pool (idempotency + transactional outbox) ────────────────
-	pool, err := pgxpool.New(ctx, cfg.crdbDSN)
+	// crdbpool, not pgxpool.New: it applies a statement_timeout so no query can hang forever.
+	pool, err := crdbpool.New(ctx, cfg.crdbDSN)
 	if err != nil {
 		return err
 	}

@@ -61,25 +61,39 @@ what each one turned out to be is more useful than the fact it is finished.
 
 ## What is actually next
 
-Nothing is blocking. In rough order of value:
+Code scanning is at **zero open alerts** and gosec reports 0 issues in both modules.
 
-- **Two repo settings only a human can change.** Dependabot *alerts* are disabled repo-wide, so
-  nothing is raised *because* an advisory was published — `govulncheck` has been carrying that
-  alone. And `test agent exactly-once effect` passes but is not among the 9 required contexts, so
-  it is advisory.
-- **Bound the remaining DB/Kafka calls** with `context.WithTimeout`, and give the service binaries a
-  self-probe mode so compose healthchecks become real. *Both HTTP shutdowns are now bounded* —
-  viz-gateway's was the urgent one, because it serves SSE and an unbounded `Shutdown` waits for a
-  stream that never ends, turning every graceful stop into a SIGKILL. The DB and Kafka calls and the
-  self-probe mode are still open.
-- ~~**10 gosec G104 warnings**~~ **Done** — zero G104 in both modules. Seven were `tx.Rollback(ctx)`
-  on orchestrator error paths, fixed by applying the `if rbErr := ...` convention the same file
-  already used twice rather than by writing `_ =`, which would have satisfied the scanner without
-  answering it. A failed rollback means the transaction still holds its `FOR UPDATE` lock.
-- **4 gosec G706 warnings** (log injection, `tools/seed/main.go`) — these are now the whole list, and
-  the previous claim that G104 *was* the whole list is corrected here. A dev-only CLI logging its own
-  flags, so the taint is argv; low value to fix, but it should be *chosen*, not inherited from a
-  stale sentence.
+- **One repo setting only a human can change.** `test agent exactly-once effect` passes on every PR
+  but is not among the 9 required contexts, so it cannot block a merge. Dependabot alerts are now
+  **enabled** (it has already opened and landed its first bump), which closes the other half of what
+  this bullet used to say.
+- ~~**Bound the remaining DB/Kafka calls**, and give the binaries a self-probe mode~~ **Done, with
+  one part deliberately left.**
+  - Compose healthchecks are real: the images are distroless, so `CMD-SHELL` cannot run and the app
+    services had no healthcheck at all — every `depends_on: service_healthy` silently meant
+    `service_started`. Each binary now answers `-probe` against its own `/readyz`, and
+    `scripts/e2e.sh` blocks on all four being healthy instead of leaning on the seeder's 60s poll to
+    absorb the startup race.
+  - Every DB statement is bounded by a session `statement_timeout` (`internal/platform/crdbpool`),
+    not by wrapping 28 call sites. The call-site approach touches the checkpoint and DLQ paths, and
+    the obvious version of it is wrong: the DLQ produce and the offset commit run *because*
+    processing failed, often because a deadline expired, so sharing that expired context with them
+    would break the confirmed-DLQ-before-commit ordering the delivery guarantee rests on. A session
+    timeout bounds statements added later too, and cannot make that mistake. It is safe to enable
+    because 57014 (`query_canceled`) already classifies Transient via errclass's class-57 prefix, so
+    a timed-out statement re-enters the retry ladder rather than dead-lettering valid work.
+  - **Still open:** the Kafka half. `PollFetches` is bounded by the consumer's own context, but the
+    produce calls on the DLQ path are not individually bounded. That one wants its own change,
+    because the DLQ produce is the single call in this system that must not fail quietly.
+- ~~**10 gosec G104 warnings**~~ **Done** — seven were `tx.Rollback(ctx)` on orchestrator error
+  paths, fixed by applying the `if rbErr := ...` convention the same file already used twice rather
+  than writing `_ =`, which would have satisfied the scanner without answering it. A failed rollback
+  means the transaction still holds its `FOR UPDATE` lock.
+- ~~**4 gosec G706 warnings**~~ **Done, and they were not noise.** `scripts/e2e.sh` recovers the key
+  the whole proof asserts on by grepping the seeder's stdout for `^SEED_SEQUENCE_ENGINE_KEY=`, and
+  the seeder printed `$SEED_EVENT_ID` one line above it. A newline in that variable forged the
+  marker, and the E2E would assert on a key nothing produced — a green run proving nothing. Fixed at
+  the boundary: `SEED_EVENT_ID` must now be a UUID.
 
 ## Backlog (not blocking)
 Lease-TTL reclaim enforcement (`owner_pod`/`lease_expires_at` written but not reaped); human-approval

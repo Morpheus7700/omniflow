@@ -11,11 +11,11 @@ import (
 	"time"
 
 	"omniflow/services/viz-gateway/internal/api"
+	"omniflow/services/viz-gateway/internal/crdbpool"
 	"omniflow/services/viz-gateway/internal/health"
 	"omniflow/services/viz-gateway/internal/kafka"
 	"omniflow/services/viz-gateway/internal/repository"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
@@ -34,7 +34,8 @@ func main() {
 	if dbURL == "" {
 		dbURL = "postgres://root@localhost:26257/omniflow?sslmode=disable"
 	}
-	db, err := pgxpool.New(ctx, dbURL)
+	// crdbpool, not pgxpool.New: it applies a statement_timeout so no query can hang forever.
+	db, err := crdbpool.New(ctx, dbURL)
 	if err != nil {
 		slog.Error("Failed to connect to database", "error", err)
 		os.Exit(1)

@@ -54,3 +54,7 @@ Architecture base */
 
 # ---- Generated protobuf note ----
 # NOTE: *.pb.go ARE committed (generated stubs checked in intentionally, per BUILD.md flow).
+
+# ---- Claude Code local overrides (personal, never shared) ----
+CLAUDE.local.md
+.claude/settings.local.json

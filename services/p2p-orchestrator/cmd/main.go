@@ -31,6 +31,12 @@ import (
 )
 
 func main() {
+	// Container healthcheck mode. Checked before anything else so the probe never depends on the
+	// configuration a running service needs — see internal/platform/health/probe.go.
+	if health.RunProbe(os.Args[1:]) {
+		return
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

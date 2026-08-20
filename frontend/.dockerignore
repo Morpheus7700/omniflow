@@ -32,6 +32,10 @@ node_modules
 .gitignore
 Dockerfile
 .dockerignore
+# go.mod here is a fence, not a build input — it keeps the root Go module's `./...` out of
+# node_modules. See the comment inside it; the divergence it fixes is the same shape as the
+# node_modules one above, and hid in the same place.
+go.mod
 *.md
 npm-debug.log*
 .DS_Store

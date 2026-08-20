@@ -410,6 +410,25 @@ frontend build proof, which matters because `npm run build` is unusable locally 
 - Killing a background `go build` leaves zombie `go.exe` entries that `taskkill` reports as
   "no running instance". They are harmless and are NOT holding cache locks — don't chase them.
 
+## `go build ./...` walked into node_modules
+
+- **Go's `./...` does not skip `node_modules`.** It skips `testdata` and names starting with `.` or
+  `_`, and nothing else. `flatted` (an npm transitive dep) ships `golang/pkg/flatted/flatted.go`, so
+  the root module claimed **26** packages on any machine where the dashboard had been installed and
+  **25** in CI — third-party Go inside `go list`, `go vet` and every local gosec run.
+- The damage was never a broken build, it was a **local/CI divergence**: CI installs npm deps *after*
+  the Go steps, so `node_modules` does not exist when it runs `go build ./...`. A future npm package
+  shipping Go that fails to compile would break locally and stay green in CI — the most confusing
+  shape a failure takes. `CLAUDE.md` calls a local pass a fast pre-check; a pre-check over a
+  different package set is not one.
+- Fixed with a nested `frontend/go.mod`. A directory containing a `go.mod` is a separate module and
+  the parent's `./...` skips its whole subtree. That is the supported mechanism — hence a module path
+  that is deliberately not importable and no Go source beside it.
+- Note the symmetry with `frontend/.dockerignore`, which exists for the same reason in a different
+  tool: **the bugs that only appear on machines where someone is actually working are the ones CI
+  structurally cannot find.** When a tool walks a directory tree, check what it picks up on a
+  developer box, not on a fresh checkout.
+
 ## Security posture the scanners do not see
 
 - **`Access-Control-Allow-Origin: *` on an unauthenticated data endpoint is a disclosure bug, and no

@@ -17,6 +17,20 @@ self-approval.
 Because `strict: true` forces a re-run per merge, prefer batching related changes into one branch
 over many single-file PRs.
 
+## `.claude/` is enforcement, not documentation
+`.claude/settings.json` wires six `PreToolUse`/`PostToolUse` hooks that can actually deny a tool
+call: secret scanning, protected-file and build-artifact blocks, dangerous-command blocking (pushes
+to `master`, `reset --hard`, `DROP TABLE`), plus `gofmt`-on-save and a session-start branch line.
+They require `jq`. Path-scoped rules live in `.claude/rules/`.
+
+Two consequences worth knowing before you fight them:
+- **Hook commands must be `bash "${CLAUDE_PROJECT_DIR}/…"`, quoted.** The bare unquoted form ships
+  broken on this machine: the project path contains a space, bash word-splits it, and every hook
+  exits 127 — the same class as the `MSYS_NO_PATHCONV` note below, and it fails *closed*.
+- **`protect-files.sh` denies edits to `.claude/hooks/*` and asks on `settings.json`.** To tune a
+  hook, use a `Bash` heredoc or disable it first; `Edit`/`Write` on those paths is blocked by the
+  hook itself.
+
 ## Start here every session → the knowledge base
 **`docs/kb/INDEX.md`** is an Obsidian-style vault — read it first to restore context cheaply instead
 of re-deriving from code. `docs/kb/05-gotchas.md` is the highest-value note (the recurring bugs);
@@ -69,6 +83,20 @@ a solo repo would make every PR unmergeable.)
   ships no JRE, so the `kafka-broker-api-versions.sh` healthcheck cannot run and the stack hangs
   waiting for a broker that never reports healthy. (Pinned version lives in `docker-compose.yml`;
   Dependabot bumps it.)
+
+## Runtime bounds — do not remove these without replacing them
+- **DB statements** are bounded by a session `statement_timeout` set in `internal/platform/crdbpool`
+  (30s, `CRDB_STATEMENT_TIMEOUT`, DSN wins). Open pools through it, never `pgxpool.New` directly.
+  This is bounded at the session rather than per call site on purpose: wrapping the call sites puts
+  an expired context on the DLQ produce and the offset commit, which run *because* processing
+  failed — that breaks the confirmed-DLQ→commit ordering above. Safe to enable only because 57014
+  classifies Transient via `errclass`'s class-57 prefix.
+- **Both HTTP shutdowns** are bounded. viz-gateway's matters most: it serves SSE, and a stream has
+  no natural end, so an unbounded `Shutdown` waits forever and the container dies by SIGKILL.
+- **viz-gateway is origin-allowlisted and capped** — `VIZ_ALLOWED_ORIGINS`, a replay row cap, and
+  `VIZ_MAX_SSE_CLIENTS`. Neither endpoint authenticates; see `SECURITY.md`.
+- **Compose healthchecks run `["CMD", "/svc", "-probe"]`**, never `CMD-SHELL`: the images are
+  `distroless/static:nonroot` and have no shell for a `curl` healthcheck to run in.
 
 ## Repo facts
 Two Go modules: root `omniflow` (go 1.25) + `services/viz-gateway` (go 1.25). Shared, non-domain

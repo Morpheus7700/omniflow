@@ -96,9 +96,13 @@ Code scanning is at **zero open alerts** and gosec reports 0 issues in both modu
     timeout bounds statements added later too, and cannot make that mistake. It is safe to enable
     because 57014 (`query_canceled`) already classifies Transient via errclass's class-57 prefix, so
     a timed-out statement re-enters the retry ladder rather than dead-lettering valid work.
-  - **Still open:** the Kafka half. `PollFetches` is bounded by the consumer's own context, but the
-    produce calls on the DLQ path are not individually bounded. That one wants its own change,
-    because the DLQ produce is the single call in this system that must not fail quietly.
+  - The Kafka half is done too (`internal/platform/delivery`). Both `ProduceSync` on the DLQ path
+    and `CommitRecords` were unbounded *and* took the consumer's own context, which gave them two
+    properties they should not have had: a wedged broker stalled the partition indefinitely with no
+    error, and a SIGTERM mid-handoff abandoned the produce and the commit together, so a message
+    already judged terminal came back on restart to be re-processed. `delivery.Context` derives from
+    `context.WithoutCancel`, so shutdown gets a bounded window to finish the durable handoff instead
+    of dropping it. The confirmed-DLQ-before-commit ordering is unchanged.
 - ~~**10 gosec G104 warnings**~~ **Done** — seven were `tx.Rollback(ctx)` on orchestrator error
   paths, fixed by applying the `if rbErr := ...` convention the same file already used twice rather
   than writing `_ =`, which would have satisfied the scanner without answering it. A failed rollback

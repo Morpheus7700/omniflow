@@ -91,6 +91,9 @@ a solo repo would make every PR unmergeable.)
   an expired context on the DLQ produce and the offset commit, which run *because* processing
   failed — that breaks the confirmed-DLQ→commit ordering above. Safe to enable only because 57014
   classifies Transient via `errclass`'s class-57 prefix.
+- **Kafka DLQ produce and offset commit** are bounded by `internal/platform/delivery`, which
+  derives from `context.WithoutCancel` on purpose: a SIGTERM mid-handoff must not abandon the
+  produce and the commit together. Never pass the raw consumer ctx to those two calls.
 - **Both HTTP shutdowns** are bounded. viz-gateway's matters most: it serves SSE, and a stream has
   no natural end, so an unbounded `Shutdown` waits forever and the container dies by SIGKILL.
 - **viz-gateway is origin-allowlisted and capped** — `VIZ_ALLOWED_ORIGINS`, a replay row cap, and

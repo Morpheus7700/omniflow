@@ -8,6 +8,7 @@ import (
 	"time"
 
 	inventoryv1 "omniflow/contracts/inventory/v1"
+	"omniflow/internal/platform/delivery"
 	"omniflow/services/inventory-intelligence/internal/core/domain"
 
 	"buf.build/go/protovalidate"
@@ -128,7 +129,11 @@ func (c *Consumer) processRecordWithRetry(ctx context.Context, record *kgo.Recor
 // processed_events idempotency table absorbed the duplicates, which is precisely why it went
 // unnoticed. CommitRecords is what commbot and p2p-orchestrator already use.
 func (c *Consumer) commit(ctx context.Context, record *kgo.Record) {
-	if err := c.client.CommitRecords(ctx, record); err != nil {
+	// Bounded, and not cancelled by the parent — a SIGTERM mid-handoff must not abandon the commit
+	// that the confirmed DLQ write has already earned. See internal/platform/delivery.
+	dctx, dcancel := delivery.Context(ctx)
+	defer dcancel()
+	if err := c.client.CommitRecords(dctx, record); err != nil {
 		slog.Error("offset commit failed", "error", err,
 			"topic", record.Topic, "partition", record.Partition, "offset", record.Offset)
 	}
@@ -172,7 +177,11 @@ func (c *Consumer) produceToDLQConfirmed(ctx context.Context, record *kgo.Record
 		Value:   record.Value,
 		Headers: dlqHeaders(record, err),
 	}
-	if e := c.client.ProduceSync(ctx, dlqRecord).FirstErr(); e != nil {
+	// Bounded, and deliberately not cancelled by the parent: this is the DLQ half of the
+	// confirmed-DLQ-before-commit contract. See internal/platform/delivery.
+	dctx, dcancel := delivery.Context(ctx)
+	defer dcancel()
+	if e := c.client.ProduceSync(dctx, dlqRecord).FirstErr(); e != nil {
 		slog.Error("failed to produce to DLQ", "error", e)
 		return e
 	}

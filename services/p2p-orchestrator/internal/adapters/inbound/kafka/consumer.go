@@ -8,6 +8,7 @@ import (
 	"time"
 
 	v1 "omniflow/contracts/communication/v1"
+	"omniflow/internal/platform/delivery"
 	"omniflow/services/p2p-orchestrator/internal/core/domain"
 
 	"encoding/base64"
@@ -211,7 +212,11 @@ func (c *Consumer) routeToDLQ(ctx context.Context, msg *kgo.Record, dlqValue []b
 		Headers: headers,
 	}
 
-	errProduce := c.client.ProduceSync(ctx, dlqRecord).FirstErr()
+	// Bounded, and deliberately not cancelled by the parent: this is the DLQ half of the
+	// confirmed-DLQ-before-commit contract. See internal/platform/delivery.
+	dctx, dcancel := delivery.Context(ctx)
+	defer dcancel()
+	errProduce := c.client.ProduceSync(dctx, dlqRecord).FirstErr()
 	if errProduce != nil {
 		slog.Error("Failed to enqueue to DLQ", "error", errProduce)
 		return
@@ -220,7 +225,11 @@ func (c *Consumer) routeToDLQ(ctx context.Context, msg *kgo.Record, dlqValue []b
 }
 
 func (c *Consumer) commitOffset(ctx context.Context, msg *kgo.Record) {
-	err := c.client.CommitRecords(ctx, msg)
+	// Bounded, and not cancelled by the parent — a SIGTERM mid-handoff must not abandon the commit
+	// that the confirmed DLQ write has already earned. See internal/platform/delivery.
+	dctx, dcancel := delivery.Context(ctx)
+	defer dcancel()
+	err := c.client.CommitRecords(dctx, msg)
 	if err != nil {
 		slog.Error("Failed to commit offset", "error", err)
 	}

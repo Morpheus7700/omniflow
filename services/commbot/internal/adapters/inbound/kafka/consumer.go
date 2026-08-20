@@ -8,6 +8,7 @@ import (
 	"time"
 
 	communicationv1 "omniflow/contracts/communication/v1"
+	"omniflow/internal/platform/delivery"
 	"omniflow/services/commbot/internal/core/domain"
 
 	"buf.build/go/protovalidate"
@@ -181,7 +182,11 @@ func (c *Consumer) deadLetter(ctx context.Context, msg *kgo.Record, cause error)
 		Value:   msg.Value,
 		Headers: append(msg.Headers, kgo.RecordHeader{Key: "error_reason", Value: []byte(cause.Error())}),
 	}
-	if err := c.client.ProduceSync(ctx, dlqRecord).FirstErr(); err != nil {
+	// Bounded, and deliberately not cancelled by the parent: this is the DLQ half of the
+	// confirmed-DLQ-before-commit contract. See internal/platform/delivery.
+	dctx, dcancel := delivery.Context(ctx)
+	defer dcancel()
+	if err := c.client.ProduceSync(dctx, dlqRecord).FirstErr(); err != nil {
 		slog.Error("DLQ delivery failed; NOT committing", "error", err)
 		return
 	}
@@ -189,7 +194,11 @@ func (c *Consumer) deadLetter(ctx context.Context, msg *kgo.Record, cause error)
 }
 
 func (c *Consumer) commit(ctx context.Context, msg *kgo.Record) {
-	err := c.client.CommitRecords(ctx, msg)
+	// Bounded, and not cancelled by the parent — a SIGTERM mid-handoff must not abandon the commit
+	// that the confirmed DLQ write has already earned. See internal/platform/delivery.
+	dctx, dcancel := delivery.Context(ctx)
+	defer dcancel()
+	err := c.client.CommitRecords(dctx, msg)
 	if err != nil {
 		slog.Error("offset commit failed", "error", err, "partition", msg.Partition)
 	}

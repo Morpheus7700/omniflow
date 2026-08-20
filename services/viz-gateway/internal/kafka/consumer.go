@@ -10,6 +10,8 @@ import (
 	"omniflow/services/viz-gateway/internal/api"
 	"omniflow/services/viz-gateway/internal/domain"
 
+	"omniflow/services/viz-gateway/internal/delivery"
+
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
@@ -51,7 +53,14 @@ func (c *Consumer) Start(ctx context.Context) {
 			// built with AutoCommitMarks, so this gateway was committing purely on franz-go's
 			// autocommit timer. Committing here means the offset advances only after the record
 			// has been handed to the SSE broker.
-			if err := c.client.CommitRecords(ctx, record); err != nil {
+			// Bounded, and not cancelled by the parent, so a SIGTERM mid-commit does not abandon an
+			// offset whose projection has already been broadcast. See internal/delivery.
+			dctx, dcancel := delivery.Context(ctx)
+			err := c.client.CommitRecords(dctx, record)
+			// Cancelled explicitly, not deferred: this runs once per record, and a deferred cancel
+			// here would pile up one live context per message until the enclosing function returns.
+			dcancel()
+			if err != nil {
 				slog.Error("offset commit failed", "error", err,
 					"topic", record.Topic, "partition", record.Partition, "offset", record.Offset)
 			}

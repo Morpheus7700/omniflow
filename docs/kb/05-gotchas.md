@@ -410,4 +410,25 @@ frontend build proof, which matters because `npm run build` is unusable locally 
 - Killing a background `go build` leaves zombie `go.exe` entries that `taskkill` reports as
   "no running instance". They are harmless and are NOT holding cache locks — don't chase them.
 
+## Security posture the scanners do not see
+
+- **`Access-Control-Allow-Origin: *` on an unauthenticated data endpoint is a disclosure bug, and no
+  scanner in this repo flags it.** gosec, CodeQL and Trivy all ran green over a viz-gateway that
+  answered `/api/stream` and `/api/replay` to any origin, with no auth and no `LIMIT` on the replay
+  query — so any page in any tab that could route to `:8081` could pull the whole `workflows` table
+  with one `fetch`. Scanners match patterns; "this header, plus that missing bound, equals bulk
+  disclosure" is a composition of two individually-unremarkable facts. **A clean Security tab is not
+  a security review.**
+- Worse, `SECURITY.md` had *talked past* it: "a compromised browser bundle exposes no more than the
+  read model already broadcasts" is only a bound if you also know who the read model broadcasts to.
+  Reassuring prose is the easiest place for a hole to hide.
+- **CORS restrains browsers, not sockets.** The allowlist stops a *page* reading the response; it
+  stops nothing holding a socket. `curl` is unaffected — which is deliberate, and is why
+  `scripts/e2e.sh` still works. Do not read the allowlist as access control.
+- **Bounding how long a query runs is not bounding how much it returns.** `statement_timeout`
+  (crdbpool) caps duration; only a `LIMIT` caps the response. The replay endpoint needed both.
+- The replay row cap **rejects** an out-of-range `limit` rather than clamping it. Clamping answers
+  "give me 100000" with 5000 and no marker, which reads to the caller as "that is all the data there
+  is" — a wrong answer is worse than an error.
+
 Related: [[03-locked-constraints]] · [[06-build-and-test]]

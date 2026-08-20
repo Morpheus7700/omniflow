@@ -183,6 +183,11 @@ services:
       DATABASE_URL: "postgres://root@cockroachdb:26257/omniflow?sslmode=disable"
       CRDB_DSN: "postgres://root@cockroachdb:26257/omniflow?sslmode=disable"
       KAFKA_BROKERS: "kafka:29092"
+      # CORS allowlist. /api/stream and /api/replay are unauthenticated and serve real procurement
+      # records, so this is the only thing deciding which sites a browser will hand those records
+      # to. It replaced `Access-Control-Allow-Origin: *`. Set it explicitly here rather than relying
+      # on the code default so that repointing the dashboard is a visible config change.
+      VIZ_ALLOWED_ORIGINS: "http://localhost:3000"
     # See the commbot healthcheck for why this is CMD and not CMD-SHELL.
     healthcheck:
       test: ["CMD", "/svc", "-probe"]

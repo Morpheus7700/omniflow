@@ -42,16 +42,18 @@ what each one turned out to be is more useful than the fact it is finished.
    failed checkpoint leaving its ledger row behind means the redelivery hits `ON CONFLICT DO
    NOTHING`, the outbox row is never written *by anyone*, and the event is lost permanently while
    every table looks consistent.
-2. ~~**Service lifecycle.**~~ **Partly done.** All four services now expose real `/healthz` and
+2. ~~**Service lifecycle.**~~ **Done.** All four services now expose real `/healthz` and
    `/readyz` (`internal/platform/health`, duplicated into viz-gateway because it is a separate
    module). Liveness performs no I/O — deliberately: an orchestrator *kills* a container whose
    liveness probe fails, so a liveness probe that pinged CockroachDB would turn a 30-second database
    blip into a fleet-wide restart. Readiness checks dependencies with a per-check 2s timeout and
    gates on startup completion.
-   **Still open:** `context.WithTimeout` on DB and Kafka calls generally (only a handful exist), and
-   compose healthchecks for the app services — the Go images are `distroless/static:nonroot` and
-   ship no shell, so `CMD-SHELL` cannot run and `depends_on: service_healthy` stays decorative until
-   the binaries gain a self-probe mode.
+   Compose healthchecks are now real too: the images are `distroless/static:nonroot` and ship no
+   shell, so `CMD-SHELL` could not run and the app services carried no healthcheck at all — every
+   `depends_on: service_healthy` silently meant `service_started`. Each binary answers `-probe`
+   against its own `/readyz` instead, which needs nothing that is not already in the image.
+   **Still open:** bounding the Kafka produce calls. See "What is actually next" below — the DB half
+   is done via `statement_timeout`.
 3. ~~**Node execution is a stub.**~~ **Done** — the `draft_po` node calls a real model through the
    drafting agent, outside the workflow transaction (a multi-second LLM call cannot hold a row
    lock). That makes node execution at-least-once by construction, so the guarantee proven is
@@ -62,6 +64,18 @@ what each one turned out to be is more useful than the fact it is finished.
 ## What is actually next
 
 Code scanning is at **zero open alerts** and gosec reports 0 issues in both modules.
+
+- ~~**The viz-gateway was open to every origin.**~~ **Done 2026-08-20.** Both `/api/stream` and
+  `/api/replay` answered with `Access-Control-Allow-Origin: *` while authenticating nothing, and the
+  replay query had no `LIMIT` — so any page in any browser that could route to port 8081 could pull
+  the entire `workflows` table in one `fetch`. Scanners never flagged it: gosec and CodeQL do not
+  model "this header plus that missing bound equals bulk disclosure", and `SECURITY.md` had talked
+  itself past it with "the frontend is presentation-only". Now an origin allowlist
+  (`VIZ_ALLOWED_ORIGINS`), a row cap (500, max 5000, rejected not clamped), and an SSE client cap
+  (`VIZ_MAX_SSE_CLIENTS`, 503 + `Retry-After`).
+  **Still true and worth stating:** neither endpoint authenticates. CORS restrains *browsers*, not
+  sockets — `curl` reads everything, by design, which is also why the E2E proof is unaffected. A
+  real boundary needs an authenticating proxy or a gateway token, which this system does not claim.
 
 - **One repo setting only a human can change.** `test agent exactly-once effect` passes on every PR
   but is not among the 9 required contexts, so it cannot block a merge. Dependabot alerts are now

@@ -235,7 +235,9 @@ Keep these in your platform's secret store — never in the repo (`.gitignore` c
 `frontend/` is presentation-only, and that boundary is deliberate: no API routes, no server actions,
 no Node/filesystem/database imports, no committed data files, and no credentials. Its **only** contact
 with the system is the viz-gateway over SSE plus a replay `GET` — so a compromised browser bundle
-exposes no more than the read-model already broadcasts.
+exposes no more than the read model already broadcasts. That is a real bound only once you also bound
+*who* the read model broadcasts to, which until 2026-08-20 was "any origin, unauthenticated, with no
+row limit". See [SECURITY.md](SECURITY.md).
 
 The gateway origin comes from one build argument, `NEXT_PUBLIC_API_BASE` (see
 `frontend/src/lib/config.ts`), defaulting to `http://localhost:8081`. Two things to know:
@@ -244,6 +246,17 @@ The gateway origin comes from one build argument, `NEXT_PUBLIC_API_BASE` (see
 - `NEXT_PUBLIC_*` is **inlined at build time and frozen into the image**, so pointing a deployment at a
   different gateway needs a rebuild, not a restart with new env. That is why it is an `ARG` on the
   builder stage rather than an `ENV` on the runner.
+- **The browser's origin must be on the gateway's allowlist.** `VIZ_ALLOWED_ORIGINS` defaults to
+  `http://localhost:3000`; if you serve the dashboard from anywhere else, add it there or the browser
+  discards the response. This replaced `Access-Control-Allow-Origin: *` — see [SECURITY.md](SECURITY.md)
+  for what that wildcard actually exposed and what is still not bounded.
+- **Replay responses are capped.** `/api/replay` returns 500 rows by default, 5000 at most, and
+  rejects an out-of-range `limit` rather than clamping it — a truncated page carries no marker, so
+  silently returning fewer rows than asked for would read as "that is all the data there is". Page by
+  re-requesting from the last `sequence_engine_key` you received.
+- **Concurrent SSE streams are capped** at `VIZ_MAX_SSE_CLIENTS` (default 100). Past it the gateway
+  answers `503` with `Retry-After` instead of accumulating goroutines for connections that, being
+  SSE, never end on their own.
 
 
 ---

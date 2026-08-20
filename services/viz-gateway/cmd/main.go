@@ -79,16 +79,37 @@ func main() {
 	// 4. Start HTTP Server
 	mux := http.NewServeMux()
 
-	// Middleware for CORS
+	// CORS, against an allowlist rather than "*".
+	//
+	// This previously sent `Access-Control-Allow-Origin: *` on both /api/stream and /api/replay.
+	// Neither endpoint authenticates anything, and both serve real procurement and inventory
+	// records — workflow ids, trace parents, sequence keys, states. A wildcard on an unauthenticated
+	// data endpoint means any page in any tab of any browser that can route to this gateway may read
+	// the whole projection history with a single fetch. On a laptop that is a demo; behind a
+	// corporate VPN it is an exfiltration path that never touches the network perimeter.
+	//
+	// The allowlist is echoed back per-request rather than sent as a static header because the
+	// wildcard cannot be used with credentials and a fixed single origin breaks the moment there are
+	// two front ends. `Vary: Origin` is required so caches never serve one origin's response to
+	// another.
+	allowedOrigins := parseOrigins(env("VIZ_ALLOWED_ORIGINS", "http://localhost:3000"))
+	slog.Info("CORS allowlist", "origins", allowedOrigins)
 	withCORS := func(h http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Access-Control-Allow-Origin", "*")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-			if r.Method == "OPTIONS" {
+			w.Header().Set("Vary", "Origin")
+			if origin := r.Header.Get("Origin"); origin != "" && allowedOrigins[origin] {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			}
+			if r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusOK)
 				return
 			}
+			// A disallowed origin still reaches the handler: CORS is enforced by the browser, which
+			// will refuse to hand the body to the page without the header. Blocking here instead
+			// would also block same-origin and non-browser callers (curl, the E2E proof), which send
+			// no Origin at all.
 			h.ServeHTTP(w, r)
 		})
 	}
@@ -138,4 +159,28 @@ func main() {
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		slog.Error("graceful shutdown did not finish cleanly", "error", err)
 	}
+}
+
+// env returns the value of k, or def when unset or empty.
+func env(k, def string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return def
+}
+
+// parseOrigins turns a comma-separated allowlist into a set for O(1) per-request lookup.
+//
+// Entries are compared byte-for-byte against the request's Origin header, which is scheme + host +
+// port and never has a trailing slash. Any entry that carries one is trimmed, because
+// "http://localhost:3000/" would otherwise silently match nothing and the failure would look like a
+// CORS bug rather than a typo.
+func parseOrigins(csv string) map[string]bool {
+	out := map[string]bool{}
+	for _, o := range strings.Split(csv, ",") {
+		if o = strings.TrimRight(strings.TrimSpace(o), "/"); o != "" {
+			out[o] = true
+		}
+	}
+	return out
 }

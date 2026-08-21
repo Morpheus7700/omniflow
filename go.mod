@@ -9,7 +9,7 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/shopspring/decimal v1.4.0
 	github.com/testcontainers/testcontainers-go v0.43.0
-	github.com/twmb/franz-go v1.21.5
+	github.com/twmb/franz-go v1.21.6
 	go.opentelemetry.io/otel v1.45.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.45.0
 	go.opentelemetry.io/otel/sdk v1.45.0

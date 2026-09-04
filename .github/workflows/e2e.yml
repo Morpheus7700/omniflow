@@ -349,12 +349,12 @@ jobs:
           gosec -no-fail -exclude-generated -fmt sarif -out gosec-root.sarif ./...
           ( cd services/viz-gateway && gosec -no-fail -exclude-generated -fmt sarif -out ../../gosec-viz.sarif ./... )
       - name: upload gosec (root)
-        uses: github/codeql-action/upload-sarif@v4.37.3
+        uses: github/codeql-action/upload-sarif@v4.37.9
         with:
           sarif_file: gosec-root.sarif
           category: gosec-root
       - name: upload gosec (viz-gateway)
-        uses: github/codeql-action/upload-sarif@v4.37.3
+        uses: github/codeql-action/upload-sarif@v4.37.9
         with:
           sarif_file: gosec-viz.sarif
           category: gosec-viz
@@ -377,7 +377,7 @@ jobs:
             --output trivy.sarif
           # report-only for now; flip --exit-code to 1 once findings are triaged
       - name: upload Trivy
-        uses: github/codeql-action/upload-sarif@v4.37.3
+        uses: github/codeql-action/upload-sarif@v4.37.9
         with:
           sarif_file: trivy.sarif
           category: trivy

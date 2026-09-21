@@ -1,9 +1,15 @@
-FROM node:26-alpine AS deps
+# syntax=docker/dockerfile:1
+# omniflow-frontend — the Next.js dashboard; build context is ./frontend (see .dockerignore here).
+#
+# Node 24 is the Active LTS line. Node 26 is "Current" until it enters LTS (scheduled for late 2026),
+# and a production image tracks LTS, not Current. Pinned by digest for the same reason the Go images
+# are (see any services/*/Dockerfile): a tag is a moving pointer; a digest is a build input.
+FROM node:24-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1 AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm npm ci --no-audit --no-fund
 
-FROM node:26-alpine AS builder
+FROM node:24-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1 AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
@@ -14,18 +20,27 @@ COPY . .
 # hardcoded (and wrong) origin.
 ARG NEXT_PUBLIC_API_BASE
 ENV NEXT_PUBLIC_API_BASE=$NEXT_PUBLIC_API_BASE
+ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
-FROM node:26-alpine AS runner
+FROM node:24-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1 AS runner
+LABEL org.opencontainers.image.title="omniflow-frontend" \
+      org.opencontainers.image.source="https://github.com/Morpheus7700/omniflow" \
+      org.opencontainers.image.licenses="Apache-2.0"
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
+ENV HOSTNAME=0.0.0.0
+ENV NEXT_TELEMETRY_DISABLED=1
 # No NEXT_PUBLIC_* here on purpose — it is already baked into the bundle by the builder stage above.
 # Repointing at a different gateway requires a rebuild, not a restart with new env.
 RUN addgroup -g 1001 -S nodejs && adduser -S nextjs -u 1001
-COPY --from=builder /app/public ./public
+COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 USER nextjs
 EXPOSE 3000
+# Alpine ships wget (busybox), which is enough to probe the app's own listener without adding curl.
+HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=6 \
+  CMD ["wget", "-qO", "/dev/null", "http://127.0.0.1:3000/"]
 CMD ["node", "server.js"]

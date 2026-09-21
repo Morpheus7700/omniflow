@@ -16,10 +16,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"testing"
 	"time"
 
+	"omniflow/internal/platform/testinfra"
 	"omniflow/services/inventory-intelligence/internal/core/domain"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -28,65 +28,24 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
-// Pinned to the exact image and start command the compose stack runs, so these tests exercise the
-// dialect and single-node topology we actually deploy against.
+// The CockroachDB image is READ from docker-compose.yml (internal/platform/testinfra), never
+// restated here, so these tests always exercise the dialect and single-node topology the stack
+// actually deploys — including after a Dependabot bump, which cannot edit a Go constant.
 //
 // The container is driven directly rather than through testcontainers' cockroachdb helper module:
 // that module depends on pgx and would drag the production pgx version forward as a side effect of
 // adding tests. Keeping the data-path dependency untouched is worth twenty lines of setup.
-const crdbImage = "cockroachdb/cockroach:v26.2.5"
 
-// TestCRDBImageMatchesCompose enforces the pin the comment above only asserts.
-//
-// This const is a Go string, so Dependabot's docker-compose ecosystem cannot see it: when compose
-// was bumped v24.3.3 -> v26.2.4 this file silently kept testing the OLD engine, and every job stayed
-// green while the integration suite validated a database version we no longer run. Nothing would
-// ever have reported that.
-//
-// Cheaper than wiring a YAML dependency, and it fails on the next bump rather than on the incident.
+// TestCRDBImageMatchesCompose keeps the name the CODEOWNERS and KB reference; what it now asserts
+// is that the compose file is self-consistent (one CockroachDB image for both the node and
+// crdb-init) and readable from here. The drift it used to catch cannot happen any more.
 func TestCRDBImageMatchesCompose(t *testing.T) {
-	composePath := filepath.Join(repoRoot(t), "docker-compose.yml")
-	raw, err := os.ReadFile(composePath)
-	if err != nil {
-		t.Fatalf("read %s: %v", composePath, err)
-	}
-
-	found := regexp.MustCompile(`(?m)^\s*image:\s*(cockroachdb/cockroach:\S+)`).
-		FindAllStringSubmatch(string(raw), -1)
-	if len(found) == 0 {
-		t.Fatal("no cockroachdb/cockroach image found in docker-compose.yml — did the service get renamed?")
-	}
-
-	for _, m := range found {
-		if m[1] != crdbImage {
-			t.Errorf("crdbImage drifted from docker-compose.yml:\n  test:    %s\n  compose: %s\n"+
-				"Integration tests must run the engine the stack actually deploys. Update crdbImage.",
-				crdbImage, m[1])
-		}
+	if img := testinfra.CRDBImage(t); img == "" {
+		t.Fatal("empty CockroachDB image from docker-compose.yml")
 	}
 }
 
 // ─── Harness ─────────────────────────────────────────────────────────────────────────────────────
-
-// repoRoot walks up from the test's working directory to the directory holding go.mod, so the real
-// shipped schema file can be applied rather than a hand-copied duplicate that could drift.
-func repoRoot(t *testing.T) string {
-	t.Helper()
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatal("could not locate repo root (no go.mod found walking up)")
-		}
-		dir = parent
-	}
-}
 
 // newTestDB boots a single-node CockroachDB, applies infrastructure/crdb_schema.sql, and returns a
 // pool. The container is shared per-test for isolation; each test gets a clean database.
@@ -94,7 +53,7 @@ func newTestDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	ctx := context.Background()
 
-	ctr, err := testcontainers.Run(ctx, crdbImage,
+	ctr, err := testcontainers.Run(ctx, testinfra.CRDBImage(t),
 		testcontainers.WithCmd("start-single-node", "--insecure", "--store=type=mem,size=100%"),
 		testcontainers.WithExposedPorts("26257/tcp", "8080/tcp"),
 		// /health returns 200 only once the node has finished initialising and can serve SQL.
@@ -138,7 +97,7 @@ func newTestDB(t *testing.T) *pgxpool.Pool {
 	}
 	t.Cleanup(pool.Close)
 
-	schema, err := os.ReadFile(filepath.Join(repoRoot(t), "infrastructure", "crdb_schema.sql"))
+	schema, err := os.ReadFile(filepath.Join(testinfra.RepoRoot(t), "infrastructure", "crdb_schema.sql"))
 	if err != nil {
 		t.Fatalf("read schema: %v", err)
 	}

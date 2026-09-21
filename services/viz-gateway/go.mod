@@ -2,6 +2,11 @@ module omniflow/services/viz-gateway
 
 go 1.25.0
 
+// The single Go toolchain pin for CI, the Docker builders and developers alike — see the note above
+// `jobs:` in .github/workflows/e2e.yml. Bump this and the golang image digests together when
+// govulncheck reports a stdlib CVE.
+toolchain go1.27.1
+
 require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/twmb/franz-go v1.21.6

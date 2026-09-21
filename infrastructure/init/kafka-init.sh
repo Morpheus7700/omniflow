@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -eo pipefail
+set -euo pipefail
 
 # kafka-init creates every topic the system produces to or consumes from, BEFORE any service starts.
 #
@@ -26,7 +26,7 @@ set -eo pipefail
 # wait loops here — same reasoning as crdb-init.sh.
 
 BOOTSTRAP="${KAFKA_BOOTSTRAP:-kafka:29092}"
-TOPICS_CLI="/opt/kafka/bin/kafka-topics.sh --bootstrap-server ${BOOTSTRAP}"
+TOPICS_CLI=(/opt/kafka/bin/kafka-topics.sh --bootstrap-server "${BOOTSTRAP}")
 
 # Single broker: replication factor MUST be 1. RF>1 fails outright with the same
 # "not enough replicas" class of error that forced KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1.
@@ -70,7 +70,7 @@ echo "Creating ${#TOPICS[@]} topics on ${BOOTSTRAP} (rf=${RF}, partitions=${PART
 for topic in "${TOPICS[@]}"; do
   # --if-not-exists makes this idempotent, so a re-run (or a restarted stack) is a no-op rather
   # than a hard failure under `set -e`.
-  $TOPICS_CLI --create --if-not-exists \
+  "${TOPICS_CLI[@]}" --create --if-not-exists \
     --topic "$topic" \
     --partitions "$PARTITIONS" \
     --replication-factor "$RF"
@@ -79,7 +79,7 @@ done
 
 # Print the realized topology so CI logs show what actually exists, not just what we asked for.
 echo "Realized topic list:"
-$TOPICS_CLI --list
+"${TOPICS_CLI[@]}" --list
 
 echo "kafka-init complete."
 # Reaching here under `set -e` means every topic was created or already present. Exit 0 explicitly

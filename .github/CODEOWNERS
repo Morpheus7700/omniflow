@@ -13,6 +13,10 @@
 #   crdb repository         -> repository_integration_test.go (real CockroachDB, single-transaction atomicity)
 #   orchestrator service.go -> failtest_killed_pod.sh + failtest_exactly_once.sh
 #   consumer DLQ ordering   -> failtest_dlq_poison.sh (wire AND semantic poison pills)
+#   orchestrator consumer   -> failtest_dlq_poison.sh does NOT cover it (inventory only); the
+#                              p2p.approval path is guarded by failtest_exactly_once.sh
+#   scripts/lib.sh          -> every boot proof, since every proof runs on it
+#   inventory fact schema   -> repository_integration_test.go applies infrastructure/crdb_schema.sql
 #
 # If you are about to change something here, the question is not "am I allowed to touch this file",
 # it is "which of those tests proves I did not break it". A change that no test objects to is either
@@ -33,10 +37,19 @@
 # no-message-dropped guarantee while every happy-path test stays green.
 /services/commbot/internal/adapters/inbound/kafka/                  @Morpheus7700
 /services/inventory-intelligence/internal/adapters/inbound/kafka/   @Morpheus7700
+/services/p2p-orchestrator/internal/adapters/inbound/kafka/         @Morpheus7700
+/services/viz-gateway/internal/kafka/                               @Morpheus7700
+/internal/platform/delivery/                                        @Morpheus7700
 
 # ── Schema and event contracts: changing these breaks consumers you cannot see from here ──
 /infrastructure/storage/                                            @Morpheus7700
+/infrastructure/crdb_schema.sql                                     @Morpheus7700
+/infrastructure/init/                                               @Morpheus7700
 /contracts/proto/                                                   @Morpheus7700
+
+# ── The proof harness: a bug here is a false green or a false red in every boot job ──
+/scripts/                                                           @Morpheus7700
+/docker-compose.yml                                                 @Morpheus7700
 
 # ── CI and dependency surveillance: the gates themselves ──
 /.github/                                                           @Morpheus7700

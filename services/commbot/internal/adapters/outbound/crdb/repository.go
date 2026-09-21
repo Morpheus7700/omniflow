@@ -51,12 +51,12 @@ func (r *Repository) AlreadyProcessed(ctx context.Context, eventID string) (bool
 func (r *Repository) PublishClassifiedEmail(ctx context.Context, email *domain.VendorEmail) error {
 	payload, err := marshalClassified(email)
 	if err != nil {
-		return fmt.Errorf("%w: marshal classified event: %v", domain.ErrTerminal, err)
+		return fmt.Errorf("%w: marshal classified event: %w", domain.ErrTerminal, err)
 	}
 
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
-		return fmt.Errorf("%w: begin tx: %v", domain.ErrTransient, err)
+		return fmt.Errorf("%w: begin tx: %w", domain.ErrTransient, err)
 	}
 	defer tx.Rollback(ctx) // no-op after a successful Commit
 
@@ -65,7 +65,7 @@ func (r *Repository) PublishClassifiedEmail(ctx context.Context, email *domain.V
 		email.EventID,
 	)
 	if err != nil {
-		return fmt.Errorf("%w: claim event: %v", domain.ErrTransient, err)
+		return fmt.Errorf("%w: claim event: %w", domain.ErrTransient, err)
 	}
 	if tag.RowsAffected() == 0 {
 		// Already claimed by a concurrent worker — effect is done. Idempotent success.
@@ -77,11 +77,11 @@ func (r *Repository) PublishClassifiedEmail(ctx context.Context, email *domain.V
 		 VALUES ($1, $2, $3, $4, $5)`,
 		email.AggregateID, orchestrationEventType, email.TraceParent, payload, email.OccurredAt,
 	); err != nil {
-		return fmt.Errorf("%w: append outbox: %v", domain.ErrTransient, err)
+		return fmt.Errorf("%w: append outbox: %w", domain.ErrTransient, err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("%w: commit: %v", domain.ErrTransient, err)
+		return fmt.Errorf("%w: commit: %w", domain.ErrTransient, err)
 	}
 	return nil
 }

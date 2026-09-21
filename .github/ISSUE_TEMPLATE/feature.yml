@@ -1,0 +1,25 @@
+name: Feature or change proposal
+description: Propose a change to the system, the proofs, or the docs.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What is wrong or missing today, concretely. A gap in the suite counts.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: The proposal
+      description: What would change, and which test would prove it works.
+    validations:
+      required: true
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      options:
+        - label: This does not re-open a locked decision (see CLAUDE.md) or a deliberate non-goal (see SCOPE.md)
+          required: true

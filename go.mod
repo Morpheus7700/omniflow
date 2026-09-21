@@ -2,6 +2,11 @@ module omniflow
 
 go 1.25.0
 
+// The single Go toolchain pin for CI, the Docker builders and developers alike — see the note above
+// `jobs:` in .github/workflows/e2e.yml. Bump this and the golang image digests together when
+// govulncheck reports a stdlib CVE.
+toolchain go1.27.1
+
 require (
 	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20260709200747-435963d16310.1
 	buf.build/go/protovalidate v1.3.0

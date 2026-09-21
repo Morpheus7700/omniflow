@@ -111,9 +111,9 @@ func classify(err error) error {
 	}
 	switch errclass.Classify(err) {
 	case errclass.Transient:
-		return fmt.Errorf("%w: %v", domain.ErrTransient, err)
+		return fmt.Errorf("%w: %w", domain.ErrTransient, err)
 	case errclass.Terminal:
-		return fmt.Errorf("%w: %v", domain.ErrTerminal, err)
+		return fmt.Errorf("%w: %w", domain.ErrTerminal, err)
 	default:
 		// Deliberately unwrapped: the consumer fails closed on anything it cannot name, and
 		// preserving the raw error keeps the SQLSTATE visible in the DLQ header for triage.

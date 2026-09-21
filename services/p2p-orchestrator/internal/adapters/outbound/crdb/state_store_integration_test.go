@@ -31,6 +31,7 @@ import (
 	"testing"
 	"time"
 
+	"omniflow/internal/platform/testinfra"
 	"omniflow/services/p2p-orchestrator/internal/core/domain"
 	"omniflow/services/p2p-orchestrator/internal/core/ports"
 
@@ -39,35 +40,15 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
-// Pinned to the image compose runs, for the same reason the inventory suite pins it: these tests
+// The CockroachDB image is READ from docker-compose.yml (internal/platform/testinfra): these tests
 // assert dialect behaviour (CTE column requirements, placeholder type inference) that is specific
-// to the engine version deployed. TestCRDBImageMatchesCompose in the inventory package guards the
-// pin against drift for the whole repo.
-const crdbImage = "cockroachdb/cockroach:v26.2.5"
-
-func repoRoot(t *testing.T) string {
-	t.Helper()
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatal("could not locate repo root (no go.mod found walking up)")
-		}
-		dir = parent
-	}
-}
+// to the engine version deployed, so they must run exactly that engine.
 
 func newTestDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	ctx := context.Background()
 
-	ctr, err := testcontainers.Run(ctx, crdbImage,
+	ctr, err := testcontainers.Run(ctx, testinfra.CRDBImage(t),
 		testcontainers.WithCmd("start-single-node", "--insecure", "--store=type=mem,size=100%"),
 		testcontainers.WithExposedPorts("26257/tcp", "8080/tcp"),
 		testcontainers.WithWaitStrategy(
@@ -111,7 +92,7 @@ func newTestDB(t *testing.T) *pgxpool.Pool {
 	t.Cleanup(pool.Close)
 
 	for _, rel := range schemaFilesInDeployOrder(t) {
-		sql, err := os.ReadFile(filepath.Join(repoRoot(t), rel))
+		sql, err := os.ReadFile(filepath.Join(testinfra.RepoRoot(t), rel))
 		if err != nil {
 			t.Fatalf("read schema %s: %v", rel, err)
 		}
@@ -137,7 +118,7 @@ func newTestDB(t *testing.T) *pgxpool.Pool {
 // principle as TestCRDBImageMatchesCompose: derive from the shipped artefact, do not restate it.
 func schemaFilesInDeployOrder(t *testing.T) []string {
 	t.Helper()
-	initPath := filepath.Join(repoRoot(t), "infrastructure", "init", "crdb-init.sh")
+	initPath := filepath.Join(testinfra.RepoRoot(t), "infrastructure", "init", "crdb-init.sh")
 	body, err := os.ReadFile(initPath)
 	if err != nil {
 		t.Fatalf("read crdb-init.sh: %v", err)

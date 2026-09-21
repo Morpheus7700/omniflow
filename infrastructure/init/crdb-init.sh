@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -eo pipefail
+set -euo pipefail
 
 # crdb-init runs in a SEPARATE cockroachdb/cockroach container (the CLI binary only — there is no
 # node in this container, and no Kafka tooling). Therefore:
@@ -9,7 +9,7 @@ set -eo pipefail
 #     `depends_on: { cockroachdb: service_healthy, kafka: service_healthy }`, so no in-script wait
 #     loops are needed (the previous Kafka wait shelled out to /opt/kafka/... which does not exist
 #     in this image and looped forever).
-CRDB="cockroach sql --insecure --host=cockroachdb:26257"
+CRDB=(cockroach sql --insecure --host=cockroachdb:26257)
 
 # License is OPTIONAL. Under CockroachDB v24.3+ licensing, a single-node cluster
 # (`start-single-node`) needs no license key, so changefeeds are attempted regardless. If a key IS
@@ -17,26 +17,30 @@ CRDB="cockroach sql --insecure --host=cockroachdb:26257"
 # below fail with a licensing error, crdb-init exits non-zero and CI fails LOUDLY (never a silent skip)
 # — the signal to add a free CRDB_LICENSE and re-run.
 echo "Setting cluster parameters..."
-$CRDB -e "SET CLUSTER SETTING kv.rangefeed.enabled = true;"
+"${CRDB[@]}" -e "SET CLUSTER SETTING kv.rangefeed.enabled = true;"
 if [ -n "${CRDB_LICENSE:-}" ]; then
-    echo "CRDB_LICENSE supplied — applying enterprise license (org=${CRDB_ORG})."
-    $CRDB -e "SET CLUSTER SETTING cluster.organization = '${CRDB_ORG}';"
-    $CRDB -e "SET CLUSTER SETTING enterprise.license = '${CRDB_LICENSE}';"
+    # Both values are secrets going into SQL string literals: escape embedded single quotes so a
+    # quote in either cannot break out of the literal, and never echo the key itself.
+    org_lit="$(printf '%s' "${CRDB_ORG:-}" | sed "s/'/''/g")"
+    key_lit="$(printf '%s' "${CRDB_LICENSE}" | sed "s/'/''/g")"
+    echo "CRDB_LICENSE supplied — applying enterprise license (org=${CRDB_ORG:-})."
+    "${CRDB[@]}" -e "SET CLUSTER SETTING cluster.organization = '${org_lit}';"
+    "${CRDB[@]}" -e "SET CLUSTER SETTING enterprise.license = '${key_lit}';"
 else
     echo "No CRDB_LICENSE — proceeding license-free (single-node, v24.3+). Changefeed creation is the test."
 fi
 
 echo "Creating omniflow database if not exists..."
-$CRDB -e "CREATE DATABASE IF NOT EXISTS omniflow;"
+"${CRDB[@]}" -e "CREATE DATABASE IF NOT EXISTS omniflow;"
 
 echo "Applying pure DDL schema files..."
-$CRDB -d omniflow -f /infrastructure/crdb_schema.sql
-$CRDB -d omniflow -f /infrastructure/storage/orchestrator_schema.sql
-$CRDB -d omniflow -f /infrastructure/storage/commbot_outbox_schema.sql
+"${CRDB[@]}" -d omniflow -f /infrastructure/crdb_schema.sql
+"${CRDB[@]}" -d omniflow -f /infrastructure/storage/orchestrator_schema.sql
+"${CRDB[@]}" -d omniflow -f /infrastructure/storage/commbot_outbox_schema.sql
 # MUST come after orchestrator_schema.sql: purchase_orders references workflows(id), and this file
 # also adds the trigger_payload column that makes a workflow resumable by a pod that did not consume
 # its originating Kafka record.
-$CRDB -d omniflow -f /infrastructure/storage/procurement_schema.sql
+"${CRDB[@]}" -d omniflow -f /infrastructure/storage/procurement_schema.sql
 
 # Idempotently create a changefeed only if no running/pending job already targets it.
 # SHOW CHANGEFEED JOBS exposes `description` (the full CREATE statement) + `status`; there is NO
@@ -48,7 +52,7 @@ create_changefeed() {
 
     echo "Checking changefeed for: $target"
     local job_status
-    job_status=$($CRDB -d omniflow --format=csv -e \
+    job_status=$("${CRDB[@]}" -d omniflow --format=csv -e \
         "SELECT status FROM [SHOW CHANGEFEED JOBS] WHERE description LIKE '%${job_match}%' ORDER BY created DESC LIMIT 1" \
         | tail -n 1)
 
@@ -56,7 +60,7 @@ create_changefeed() {
         echo "Changefeed for $target is already '$job_status'. Skipping creation."
     else
         echo "Creating changefeed for $target..."
-        $CRDB -d omniflow -e "$create_stmt"
+        "${CRDB[@]}" -d omniflow -e "$create_stmt"
     fi
 }
 

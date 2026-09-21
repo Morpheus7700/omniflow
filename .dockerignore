@@ -1,5 +1,22 @@
-node_modules
-.next
+# Build-context exclusions for every image built with `context: .` (the root-module Go services and
+# tools). Docker reads .dockerignore from the ROOT OF THE BUILD CONTEXT, so this file does nothing
+# for the frontend (context: ./frontend — it has its own) or viz-gateway (context: services/viz-gateway).
+#
+# Patterns are anchored at the context root unless prefixed with **/. The old `node_modules` line
+# matched only a top-level directory, so frontend/node_modules (hundreds of MB on a developer box)
+# was uploaded to the daemon on every local build of every Go image.
 .git
-*.md
+**/node_modules
+**/.next
+**/.proof-logs
+**/*.md
+!**/README.md
 local_data_dir
+frontend/
+docs/
+truth/
+.claude/
+.claude-flow/
+.github/
+scripts/
+*.docx

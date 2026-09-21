@@ -82,7 +82,7 @@ func (s *CommBotService) ProcessVendorEmail(ctx context.Context, email *VendorEm
 	if err := s.publisher.PublishClassifiedEmail(ctx, &processed); err != nil {
 		span.RecordError(err)
 		// Publish failures are typically transient (broker/network); let the consumer retry.
-		return nil, fmt.Errorf("%w: route to orchestrator: %v", ErrTransient, err)
+		return nil, fmt.Errorf("%w: route to orchestrator: %w", ErrTransient, err)
 	}
 
 	return &processed, nil

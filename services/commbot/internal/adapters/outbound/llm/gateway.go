@@ -176,7 +176,11 @@ func (g *LiteLLMGateway) callGateway(ctx context.Context, subject, body string) 
 	if err != nil {
 		return domain.IntentUnspecified, fmt.Errorf("%w: build request: %w", domain.ErrTerminal, err)
 	}
-	req.Header.Set("Authorization", "Bearer "+g.apiKey)
+	// Only when a key is configured: an empty key used to be sent as a bare "Bearer " header,
+	// which a gateway logs as a malformed credential on every call.
+	if g.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+g.apiKey)
+	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := g.llmClient.Do(req)

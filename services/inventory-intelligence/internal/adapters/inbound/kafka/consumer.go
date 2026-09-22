@@ -9,6 +9,8 @@ import (
 
 	inventoryv1 "omniflow/contracts/inventory/v1"
 	"omniflow/internal/platform/delivery"
+	"omniflow/internal/platform/metrics"
+	"omniflow/internal/platform/retry"
 	"omniflow/services/inventory-intelligence/internal/core/domain"
 
 	"buf.build/go/protovalidate"
@@ -22,7 +24,10 @@ type Consumer struct {
 	client    *kgo.Client
 	service   *domain.ValuationService
 	validator protovalidate.Validator
+	retry     retry.Policy
 }
+
+const serviceName = "inventory-intelligence"
 
 func NewConsumer(client *kgo.Client, svc *domain.ValuationService) (*Consumer, error) {
 	// Compile the ruleset EAGERLY at startup rather than on first message.
@@ -40,16 +45,12 @@ func NewConsumer(client *kgo.Client, svc *domain.ValuationService) (*Consumer, e
 		return nil, fmt.Errorf("init protovalidate: %w", err)
 	}
 	return &Consumer{
+		retry:     retry.FromEnv(),
 		client:    client,
 		service:   svc,
 		validator: v,
 	}, nil
 }
-
-const (
-	maxTransientRetries = 5
-	initialBackoff      = 100 * time.Millisecond
-)
 
 func (c *Consumer) Start(ctx context.Context) {
 	for {
@@ -83,14 +84,14 @@ func (c *Consumer) Start(ctx context.Context) {
 // failed record was never retried and the *next* record was processed instead — a silent drop
 // that also broke per-partition ordering. Retrying in place is what actually redelivers.
 func (c *Consumer) processRecordWithRetry(ctx context.Context, record *kgo.Record) {
-	backoff := initialBackoff
 	var err error
 
-	for attempt := 1; attempt <= maxTransientRetries; attempt++ {
+	for attempt := 1; attempt <= c.retry.MaxAttempts; attempt++ {
 		err = c.processRecord(ctx, record)
 		switch {
 		case err == nil:
 			c.commit(ctx, record)
+			metrics.ConsumerRecords.WithLabelValues(serviceName, record.Topic, metrics.OutcomeOK).Inc()
 			return
 
 		case errors.Is(err, domain.ErrTerminal):
@@ -99,14 +100,14 @@ func (c *Consumer) processRecordWithRetry(ctx context.Context, record *kgo.Recor
 
 		case errors.Is(err, domain.ErrTransient):
 			slog.Warn("transient error, retrying in place",
-				"error", err, "attempt", attempt, "max_attempts", maxTransientRetries,
+				"error", err, "attempt", attempt, "max_attempts", c.retry.MaxAttempts,
 				"topic", record.Topic, "partition", record.Partition, "offset", record.Offset)
+			metrics.ConsumerRetries.WithLabelValues(serviceName, record.Topic).Inc()
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(backoff):
+			case <-time.After(c.retry.Backoff(attempt)):
 			}
-			backoff *= 2
 
 		default:
 			// Unclassified. Fail closed, matching commbot and errclass.Unknown: an error we
@@ -117,7 +118,7 @@ func (c *Consumer) processRecordWithRetry(ctx context.Context, record *kgo.Recor
 		}
 	}
 
-	c.deadLetter(ctx, record, fmt.Errorf("transient retries exhausted after %d attempts: %w", maxTransientRetries, err))
+	c.deadLetter(ctx, record, fmt.Errorf("transient retries exhausted after %d attempts: %w", c.retry.MaxAttempts, err))
 }
 
 // commit synchronously commits the record's offset.
@@ -148,6 +149,7 @@ func (c *Consumer) deadLetter(ctx context.Context, record *kgo.Record, cause err
 		return // do not commit; the record will be redelivered to a future member
 	}
 	c.commit(ctx, record)
+	metrics.ConsumerRecords.WithLabelValues(serviceName, record.Topic, metrics.OutcomeDLQ).Inc()
 }
 
 func (c *Consumer) processRecord(ctx context.Context, record *kgo.Record) error {

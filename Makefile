@@ -16,7 +16,7 @@ MODULES := . services/viz-gateway
 
 .PHONY: help build vet test test-integration fmt fmt-check lint lint-go lint-sh vuln check \
         frontend-install frontend-lint frontend-typecheck frontend-build frontend-test frontend \
-        up down logs e2e failtests tools clean
+        up up-observability down logs e2e failtests tools clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -80,8 +80,11 @@ frontend: frontend-lint frontend-typecheck frontend-test frontend-build ## Every
 up: ## Boot the compose stack (detached, rebuild images)
 	docker compose up -d --build
 
+up-observability: ## Boot the stack plus collector, Tempo, Prometheus and Grafana (http://127.0.0.1:3001)
+	OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318 docker compose --profile observability up -d --build
+
 down: ## Tear the stack down, including volumes
-	docker compose down -v --remove-orphans
+	docker compose --profile observability down -v --remove-orphans
 
 logs: ## Follow all container logs
 	docker compose logs -f --no-color

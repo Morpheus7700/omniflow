@@ -9,6 +9,8 @@ import (
 
 	v1 "omniflow/contracts/communication/v1"
 	"omniflow/internal/platform/delivery"
+	"omniflow/internal/platform/metrics"
+	"omniflow/internal/platform/retry"
 	"omniflow/services/p2p-orchestrator/internal/core/domain"
 
 	"encoding/base64"
@@ -16,6 +18,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	"buf.build/go/protovalidate"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
@@ -34,15 +37,37 @@ func decodeChangefeedBytes(s string) ([]byte, error) {
 
 type OrchestratorService interface {
 	ProcessEvent(ctx context.Context, payload []byte, isApproval bool) error
+	// FailWorkflow is called with the workflow's event id before a record is dead-lettered, so a
+	// workflow whose driving record is abandoned is marked FAILED rather than left RUNNING forever.
+	FailWorkflow(ctx context.Context, eventID, nodeID, reason string) error
 }
 
 type Consumer struct {
-	client  *kgo.Client
-	service OrchestratorService
+	client    *kgo.Client
+	service   OrchestratorService
+	validator protovalidate.Validator
+	retry     retry.Policy
 }
 
-func NewConsumer(c *kgo.Client, svc OrchestratorService) *Consumer {
-	return &Consumer{client: c, service: svc}
+const serviceName = "p2p-orchestrator"
+
+// NewConsumer builds the validator eagerly. This consumer was the one of three that did not
+// validate at the Kafka boundary at all — and its second topic is the approval control plane,
+// where a message is an instruction to release a purchase order. Both wire formats are validated:
+// the changefeed-wrapped VendorEmailReceived and the bare HumanApprovalEvent.
+//
+// WithDisableLazy + WithMessages: rules are compiled here, so a non-compiling ruleset is a boot
+// failure rather than a per-message error that would dead-letter 100% of traffic while the
+// constructor reported success.
+func NewConsumer(c *kgo.Client, svc OrchestratorService) (*Consumer, error) {
+	v, err := protovalidate.New(
+		protovalidate.WithDisableLazy(),
+		protovalidate.WithMessages(&v1.VendorEmailReceived{}, &v1.HumanApprovalEvent{}),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("init protovalidate: %w", err)
+	}
+	return &Consumer{client: c, service: svc, validator: v, retry: retry.FromEnv()}, nil
 }
 
 func (c *Consumer) Start(ctx context.Context) {
@@ -74,6 +99,9 @@ func (c *Consumer) processMessageWithRetry(ctx context.Context, msg *kgo.Record)
 
 	var traceParent string
 	var isApproval bool
+	// The workflow this record drives, known once the payload decodes. Used to mark the workflow
+	// FAILED if the record is abandoned to the DLQ; empty for records that never decoded.
+	var eventID string
 
 	if topic == "omniflow.p2p.approval.v1" {
 		isApproval = true
@@ -82,7 +110,15 @@ func (c *Consumer) processMessageWithRetry(ctx context.Context, msg *kgo.Record)
 			c.routeToDLQ(ctx, msg, originalValue, err)
 			return
 		}
+		// An approval that fails validation is dead-lettered WITHOUT failing the workflow: the
+		// workflow is still legitimately waiting, and a malformed approval must not be able to
+		// abort it — that would let anyone who can produce garbage to the topic kill any PO.
+		if err := c.validator.Validate(&env); err != nil {
+			c.routeToDLQ(ctx, msg, originalValue, fmt.Errorf("%w: approval failed validation: %w", domain.ErrTerminal, err))
+			return
+		}
 		traceParent = env.TraceParent
+		eventID = env.EventId
 	} else {
 		var env struct {
 			Resolved interface{} `json:"resolved"`
@@ -99,12 +135,14 @@ func (c *Consumer) processMessageWithRetry(ctx context.Context, msg *kgo.Record)
 		// Skip resolved-timestamp messages without erroring
 		if env.Resolved != nil {
 			c.commitOffset(ctx, msg)
+			metrics.ConsumerRecords.WithLabelValues(serviceName, msg.Topic, metrics.OutcomeSkipped).Inc()
 			return
 		}
 
 		if env.After.Payload == "" {
 			// tombstone / delete or empty row — nothing to process
 			c.commitOffset(ctx, msg)
+			metrics.ConsumerRecords.WithLabelValues(serviceName, msg.Topic, metrics.OutcomeSkipped).Inc()
 			return
 		}
 		payloadBytes, err := decodeChangefeedBytes(env.After.Payload)
@@ -118,7 +156,12 @@ func (c *Consumer) processMessageWithRetry(ctx context.Context, msg *kgo.Record)
 			c.routeToDLQ(ctx, msg, originalValue, err)
 			return
 		}
+		if err := c.validator.Validate(&payload); err != nil {
+			c.routeToDLQ(ctx, msg, originalValue, fmt.Errorf("%w: trigger failed validation: %w", domain.ErrTerminal, err))
+			return
+		}
 		traceParent = payload.TraceParent
+		eventID = payload.EventId
 
 		// Update msg.Value so the underlying service.ProcessEvent receives the unmarshaled payload bytes
 		msg.Value = payloadBytes
@@ -131,33 +174,33 @@ func (c *Consumer) processMessageWithRetry(ctx context.Context, msg *kgo.Record)
 	ctx, span := tracer.Start(ctx, "ConsumeMessage")
 	defer span.End()
 
-	maxRetries := 5
-	backoff := 100 * time.Millisecond
+	maxRetries := c.retry.MaxAttempts
 	var err error
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		err = c.service.ProcessEvent(ctx, msg.Value, isApproval)
 		if err == nil {
 			c.commitOffset(ctx, msg)
+			metrics.ConsumerRecords.WithLabelValues(serviceName, msg.Topic, metrics.OutcomeOK).Inc()
 			return
 		}
 
 		if errors.Is(err, domain.ErrTerminal) {
 			slog.Error("Terminal error in orchestrator", "error", err, "attempt", attempt,
 				"topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset)
-			c.routeToDLQ(ctx, msg, originalValue, err)
+			c.failThenDLQ(ctx, msg, originalValue, eventID, isApproval, err)
 			return
 		}
 
 		if errors.Is(err, domain.ErrTransient) {
 			slog.Warn("Transient error, retrying in-place", "error", err, "attempt", attempt,
-				"topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset)
+				"max_attempts", maxRetries, "topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset)
+			metrics.ConsumerRetries.WithLabelValues(serviceName, msg.Topic).Inc()
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(backoff):
+			case <-time.After(c.retry.Backoff(attempt)):
 			}
-			backoff *= 2
 			continue
 		}
 
@@ -170,13 +213,30 @@ func (c *Consumer) processMessageWithRetry(ctx context.Context, msg *kgo.Record)
 		// leaves this branch for genuinely unknown errors, and those fail closed.
 		slog.Error("Unclassified error, failing closed to DLQ", "error", err, "attempt", attempt,
 			"topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset)
-		c.routeToDLQ(ctx, msg, originalValue, fmt.Errorf("unclassified error (defaulting terminal): %w", err))
+		c.failThenDLQ(ctx, msg, originalValue, eventID, isApproval, fmt.Errorf("unclassified error (defaulting terminal): %w", err))
 		return
 	}
 
 	slog.Error("Exhausted retries, routing to DLQ",
 		"topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset)
-	c.routeToDLQ(ctx, msg, originalValue, fmt.Errorf("transient retries exhausted after %d attempts: %w", maxRetries, err))
+	c.failThenDLQ(ctx, msg, originalValue, eventID, isApproval, fmt.Errorf("transient retries exhausted after %d attempts: %w", maxRetries, err))
+}
+
+// failThenDLQ marks the workflow FAILED, then dead-letters the record. The order matters and so
+// does the independence: the failure is recorded first so the DLQ record and the FAILED row agree,
+// but a failure to record it (the workflow may not exist yet, or its row may be locked) must
+// never block the dead-letter — the confirmed-DLQ-before-commit contract is what guarantees the
+// message is not lost, and it takes precedence.
+//
+// An abandoned APPROVAL does not fail the workflow. The workflow is still waiting, correctly; the
+// approval sweep decides when waiting has gone on too long.
+func (c *Consumer) failThenDLQ(ctx context.Context, msg *kgo.Record, dlqValue []byte, eventID string, isApproval bool, cause error) {
+	if eventID != "" && !isApproval {
+		if err := c.service.FailWorkflow(ctx, eventID, "", cause.Error()); err != nil {
+			slog.Error("could not mark workflow FAILED before dead-lettering", "event_id", eventID, "error", err)
+		}
+	}
+	c.routeToDLQ(ctx, msg, dlqValue, cause)
 }
 
 // routeToDLQ sends a failed record to the dead-letter topic of the topic it came from.
@@ -222,6 +282,7 @@ func (c *Consumer) routeToDLQ(ctx context.Context, msg *kgo.Record, dlqValue []b
 		return
 	}
 	c.commitOffset(ctx, msg)
+	metrics.ConsumerRecords.WithLabelValues(serviceName, msg.Topic, metrics.OutcomeDLQ).Inc()
 }
 
 func (c *Consumer) commitOffset(ctx context.Context, msg *kgo.Record) {

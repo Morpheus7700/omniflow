@@ -12,6 +12,8 @@ import (
 	"omniflow/internal/platform/aigov"
 	"omniflow/internal/platform/crdbpool"
 	"omniflow/internal/platform/health"
+	"omniflow/internal/platform/kafkaconf"
+	"omniflow/internal/platform/telemetry"
 	"omniflow/services/p2p-orchestrator/internal/adapters/inbound/kafka"
 	"omniflow/services/p2p-orchestrator/internal/adapters/outbound/agent"
 	"omniflow/services/p2p-orchestrator/internal/adapters/outbound/crdb"
@@ -21,13 +23,7 @@ import (
 
 	"github.com/twmb/franz-go/pkg/kgo"
 	"strconv"
-	"strings"
 	"time"
-
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
-	"go.opentelemetry.io/otel/propagation"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 func main() {
@@ -40,25 +36,27 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// 1. Init OTel Tracing Provider with OTLP Exporter and Batcher
-	otel.SetTextMapPropagator(propagation.TraceContext{})
-
-	exporter, err := otlptracehttp.New(ctx, otlptracehttp.WithEndpoint("localhost:4318"), otlptracehttp.WithInsecure())
+	// 1. Logging + tracing + metrics. This used to build an exporter against a hardcoded
+	// localhost:4318 with no service.name — every batch failed inside a container, and the spans
+	// that did escape arrived as unknown_service.
+	shutdownTelemetry, err := telemetry.Init(ctx, "p2p-orchestrator")
 	if err != nil {
-		slog.Error("Failed to create OTLP exporter", "error", err)
+		slog.Error("telemetry init", "error", err)
 		os.Exit(1)
 	}
-
-	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exporter),
-	)
-	otel.SetTracerProvider(tp)
-	defer func() { _ = tp.Shutdown(context.Background()) }()
+	defer func() {
+		if err := shutdownTelemetry(context.Background()); err != nil {
+			slog.Error("telemetry shutdown", "error", err)
+		}
+	}()
 
 	// 2. Init DB Pool
 	dsn := os.Getenv("CRDB_DSN")
 	if dsn == "" {
-		dsn = "postgres://root@localhost:26257/defaultdb?sslmode=disable"
+		// No default — the old one pointed at `defaultdb`, contradicting the locked "DB name =
+		// omniflow" decision, and a silently-wrong database is worse than a refused boot.
+		slog.Error("CRDB_DSN is not set")
+		os.Exit(1)
 	}
 	// crdbpool, not pgxpool.New: it applies a statement_timeout so no query can hang forever.
 	pool, err := crdbpool.New(ctx, dsn)
@@ -99,32 +97,68 @@ func main() {
 
 	svc := core.NewOrchestratorService(store, dag, map[string]ports.NodeExecutor{
 		"draft_po": drafter,
+	}, core.Config{
+		// The container hostname (Kubernetes sets it to the pod name) — so the workflow row names
+		// the replica that parked it, not a literal.
+		OwnerPod:     env("HOSTNAME", "orchestrator"),
+		HITLLeaseTTL: envDuration("HITL_LEASE_TTL", core.DefaultHITLLeaseTTL),
 	})
 
 	// 3. Init Kafka
-	brokers := os.Getenv("KAFKA_BROKERS")
-	if brokers == "" {
-		brokers = "localhost:9092"
+	// Transport (brokers, TLS, SASL) comes from the environment via kafkaconf; the consumer
+	// contract — manual commit — is fixed here and must stay.
+	kopts, err := kafkaconf.FromEnv()
+	if err != nil {
+		slog.Error("kafka config", "error", err)
+		os.Exit(1)
 	}
-	client, err := kgo.NewClient(
-		kgo.SeedBrokers(strings.Split(brokers, ",")...),
+	client, err := kgo.NewClient(append(kopts,
 		kgo.ConsumerGroup("p2p-orchestrator"),
 		kgo.ConsumeTopics("omniflow.orchestration.v1", "omniflow.p2p.approval.v1"),
 		kgo.DisableAutoCommit(),
-	)
+	)...)
 	if err != nil {
 		slog.Error("Failed to create consumer", "error", err)
 		os.Exit(1)
 	}
 	defer client.Close()
 
-	adapter := kafka.NewConsumer(client, svc)
+	adapter, err := kafka.NewConsumer(client, svc)
+	if err != nil {
+		slog.Error("Failed to build consumer", "error", err)
+		os.Exit(1)
+	}
 
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		adapter.Start(ctx)
+	}()
+
+	// The human-gate sweep. A workflow parked at human_approval carries a lease expiry that, until
+	// this existed, nothing read: an approval that never arrived left the workflow SUSPENDED forever
+	// and the purchase order it gated invisible. Every replica sweeps; the row lock decides who
+	// fails a given workflow.
+	sweepEvery := envDuration("HITL_SWEEP_INTERVAL", time.Minute)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		t := time.NewTicker(sweepEvery)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				n, err := svc.ReapExpiredApprovals(ctx, 100)
+				if err != nil {
+					slog.Error("approval sweep failed", "error", err)
+				} else if n > 0 {
+					slog.Warn("approval sweep failed timed-out workflows", "count", n)
+				}
+			}
+		}
 	}()
 
 	// 4. Start Healthcheck Server
@@ -137,10 +171,15 @@ func main() {
 	probes := health.New(health.DBCheck("crdb", pool))
 	mux := http.NewServeMux()
 	probes.Register(mux)
+	mux.Handle("/metrics", telemetry.MetricsHandler())
 	srv := &http.Server{
 		Addr:              ":8080",
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    64 << 10,
+		WriteTimeout:      15 * time.Second,
 	}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -227,4 +266,19 @@ func envRateBurst() int {
 		return maxBurst
 	}
 	return int(v)
+}
+
+// envDuration reads a Go duration ("24h", "90s"). A malformed value falls back and says so, for
+// the same reason envUint does: a silently-zero TTL would fail every approval on the next sweep.
+func envDuration(k string, def time.Duration) time.Duration {
+	raw := os.Getenv(k)
+	if raw == "" {
+		return def
+	}
+	v, err := time.ParseDuration(raw)
+	if err != nil || v <= 0 {
+		slog.Error("invalid duration, using default", "key", k, "value", raw, "default", def, "error", err)
+		return def
+	}
+	return v
 }

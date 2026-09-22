@@ -47,8 +47,7 @@ func (r *ReplayRepository) GetMovements(ctx context.Context, fromSeq, toSeq uint
 		}
 
 		e.SequenceEngineKey = strconv.FormatUint(seqKey, 10)
-		e.Stage = domain.VisualizationStage(stateStr) // Real stage
-		e.Status = "SUCCESS"                          // Or logic based on state
+		e.Stage, e.Status = domain.ProjectWorkflowState(stateStr)
 		events = append(events, e)
 	}
 

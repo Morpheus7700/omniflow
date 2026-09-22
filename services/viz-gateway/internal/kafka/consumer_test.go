@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"omniflow/services/viz-gateway/internal/api"
+	"omniflow/services/viz-gateway/internal/domain"
 
 	"github.com/twmb/franz-go/pkg/kgo"
 )
@@ -209,8 +210,13 @@ func TestHandleP2PCompletedUnwrapsAfterEnvelope(t *testing.T) {
 	if got := data["aggregate_id"]; got != "5f05b9d0-e173-43cc-b52a-627671f55508" {
 		t.Errorf("aggregate_id = %v, want the value from inside after{}", got)
 	}
-	if got := data["status"]; got != "NodeTransition" {
-		t.Errorf("status = %v, want NodeTransition", got)
+	// event_type is PROJECTED, not passed through: the raw outbox vocabulary is the orchestrator's,
+	// and the dashboard branches on the projected status (FAILURE is drawn as an exception).
+	if got := data["status"]; got != domain.StatusSuccess {
+		t.Errorf("status = %v, want %s (NodeTransition projects to a successful transition)", got, domain.StatusSuccess)
+	}
+	if got := data["stage"]; got != string(domain.StageInTransit) {
+		t.Errorf("stage = %v, want %s", got, domain.StageInTransit)
 	}
 	if got := data["trace_parent"]; got != "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01" {
 		t.Errorf("trace_parent = %v, want the W3C traceparent from after{}", got)

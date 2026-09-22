@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"log/slog"
 	"net/http"
 	"os"
@@ -83,9 +85,11 @@ func (b *SSEBroker) Run(ctx context.Context) {
 			return
 		case client := <-b.newClients:
 			b.clients[client] = true
+			sseClients.Set(float64(len(b.clients)))
 			slog.Info("SSE client connected", "active_clients", len(b.clients))
 		case client := <-b.closedClients:
 			delete(b.clients, client)
+			sseClients.Set(float64(len(b.clients)))
 			close(client)
 			slog.Info("SSE client disconnected", "active_clients", len(b.clients))
 		case event := <-b.broadcast:
@@ -164,3 +168,10 @@ func (b *SSEBroker) StreamHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 }
+
+// sseClients is the live connection count, the one number that says whether the cap
+// (VIZ_MAX_SSE_CLIENTS) is about to turn a dashboard away.
+var sseClients = promauto.NewGauge(prometheus.GaugeOpts{
+	Name: "omniflow_sse_clients",
+	Help: "Connected SSE clients.",
+})

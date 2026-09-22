@@ -42,9 +42,15 @@ message VendorEmailReceived {
   repeated Attachment attachments = 14 [(buf.validate.field).repeated.max_items = 25];
 }
 
+// HumanApprovalEvent resumes a workflow parked at its human-in-the-loop gate. It is a CONTROL
+// message: anything able to produce it approves a purchase order, so the transport (Kafka ACLs /
+// SASL) is the authentication boundary and this message carries the audit facts. The orchestrator
+// validates these rules before it acts and persists approved_by into the workflow's outbox event.
 message HumanApprovalEvent {
-    string event_id = 1;
-    string trace_parent = 2;
-    uint64 sequence_engine_key = 3;
-    string approved_by = 4;
+    string event_id            = 1 [(buf.validate.field).string.uuid = true];
+    string trace_parent        = 2 [(buf.validate.field).string.pattern = "^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$"];
+    uint64 sequence_engine_key = 3 [(buf.validate.field).uint64.gt = 0];
+    // Who approved. Required and bounded: an approval with no attributable approver is not an
+    // approval, and an unbounded string is a log-injection and storage surface.
+    string approved_by         = 4 [(buf.validate.field).string = {min_len: 1, max_len: 256}];
 }

@@ -171,11 +171,12 @@ func (c *Consumer) handleP2PCompleted(record *kgo.Record) {
 
 	occurredAt, _ := time.Parse(time.RFC3339Nano, extractString(after["occurred_at"]))
 
+	stage, status := domain.ProjectOutboxEvent(extractString(after["event_type"]))
 	proj := domain.ProjectionEvent{
 		AggregateID:       extractString(after["aggregate_id"]),
-		Stage:             domain.StagePOCreated,
-		Status:            extractString(after["event_type"]), // 'NodeTransition'
-		SequenceEngineKey: seqKey,                             // string guaranteed
+		Stage:             stage,
+		Status:            status,
+		SequenceEngineKey: seqKey, // string guaranteed
 		OccurredAt:        occurredAt,
 		TraceParent:       extractString(after["trace_parent"]),
 	}

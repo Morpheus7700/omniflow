@@ -346,14 +346,20 @@ func (x *VendorEmailReceived) GetAttachments() []*Attachment {
 	return nil
 }
 
+// HumanApprovalEvent resumes a workflow parked at its human-in-the-loop gate. It is a CONTROL
+// message: anything able to produce it approves a purchase order, so the transport (Kafka ACLs /
+// SASL) is the authentication boundary and this message carries the audit facts. The orchestrator
+// validates these rules before it acts and persists approved_by into the workflow's outbox event.
 type HumanApprovalEvent struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
 	EventId           string                 `protobuf:"bytes,1,opt,name=event_id,json=eventId,proto3" json:"event_id,omitempty"`
 	TraceParent       string                 `protobuf:"bytes,2,opt,name=trace_parent,json=traceParent,proto3" json:"trace_parent,omitempty"`
 	SequenceEngineKey uint64                 `protobuf:"varint,3,opt,name=sequence_engine_key,json=sequenceEngineKey,proto3" json:"sequence_engine_key,omitempty"`
-	ApprovedBy        string                 `protobuf:"bytes,4,opt,name=approved_by,json=approvedBy,proto3" json:"approved_by,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// Who approved. Required and bounded: an approval with no attributable approver is not an
+	// approval, and an unbounded string is a log-injection and storage surface.
+	ApprovedBy    string `protobuf:"bytes,4,opt,name=approved_by,json=approvedBy,proto3" json:"approved_by,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *HumanApprovalEvent) Reset() {
@@ -454,12 +460,13 @@ const file_events_communication_v1_orchestration_proto_rawDesc = "" +
 	"\x19INTENT_INVOICE_SUBMISSION\x10\x01\x12\x1a\n" +
 	"\x16INTENT_PAYMENT_DISPUTE\x10\x02\x12!\n" +
 	"\x1dINTENT_PURCHASE_ORDER_INQUIRY\x10\x03\x12\x1a\n" +
-	"\x16INTENT_GENERAL_SUPPORT\x10\x04\"\xa3\x01\n" +
-	"\x12HumanApprovalEvent\x12\x19\n" +
-	"\bevent_id\x18\x01 \x01(\tR\aeventId\x12!\n" +
-	"\ftrace_parent\x18\x02 \x01(\tR\vtraceParent\x12.\n" +
-	"\x13sequence_engine_key\x18\x03 \x01(\x04R\x11sequenceEngineKey\x12\x1f\n" +
-	"\vapproved_by\x18\x04 \x01(\tR\n" +
+	"\x16INTENT_GENERAL_SUPPORT\x10\x04\"\xf5\x01\n" +
+	"\x12HumanApprovalEvent\x12#\n" +
+	"\bevent_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\aeventId\x12T\n" +
+	"\ftrace_parent\x18\x02 \x01(\tB1\xbaH.r,2*^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$R\vtraceParent\x127\n" +
+	"\x13sequence_engine_key\x18\x03 \x01(\x04B\a\xbaH\x042\x02 \x00R\x11sequenceEngineKey\x12+\n" +
+	"\vapproved_by\x18\x04 \x01(\tB\n" +
+	"\xbaH\ar\x05\x10\x01\x18\x80\x02R\n" +
 	"approvedByB5Z3omniflow/contracts/communication/v1;communicationv1b\x06proto3"
 
 var (

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"omniflow/internal/platform/errclass"
 	"omniflow/services/p2p-orchestrator/internal/core/domain"
@@ -31,7 +32,8 @@ func NewStore(p *pgxpool.Pool) *Store {
 
 func (s *Store) LoadOrCreateWorkflow(ctx context.Context, eventID string, traceParent string, seqKey uint64, sortedNodes []string, triggerPayload []byte) (*domain.Workflow, error) {
 	var wf domain.Workflow
-	var ownerPod, leaseExpiresAt *string
+	var ownerPod *string
+	var leaseExpiresAt *time.Time
 	// trigger_payload is stored on creation and read back on every load. Node execution happens
 	// outside the transaction, so a pod that resumes a half-executed workflow was NOT the pod that
 	// consumed the Kafka record and cannot recover the node's input any other way.
@@ -39,43 +41,84 @@ func (s *Store) LoadOrCreateWorkflow(ctx context.Context, eventID string, traceP
 		INSERT INTO workflows (event_id, trace_parent, sequence_engine_key, state, current_node_index, sorted_nodes, trigger_payload)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (event_id) DO UPDATE SET event_id = workflows.event_id
-		RETURNING id, event_id, trace_parent, sequence_engine_key, state, current_node_index, sorted_nodes, owner_pod, lease_expires_at::text, trigger_payload
+		RETURNING id, event_id, trace_parent, sequence_engine_key, state, current_node_index, sorted_nodes, owner_pod, lease_expires_at, trigger_payload
 	`, eventID, traceParent, seqKey, string(domain.StatePending), 0, sortedNodes, triggerPayload).Scan(
 		&wf.ID, &wf.EventID, &wf.TraceParent, &wf.SequenceEngineKey, &wf.State,
 		&wf.CurrentNodeIndex, &wf.SortedNodes, &ownerPod, &leaseExpiresAt, &wf.TriggerPayload,
 	)
 	if err != nil {
-		return nil, err
+		return nil, classify(err)
 	}
 	if ownerPod != nil {
 		wf.OwnerPod = *ownerPod
+	}
+	if leaseExpiresAt != nil {
+		wf.LeaseExpiresAt = *leaseExpiresAt
 	}
 	return &wf, nil
 }
 
 const loadWorkflowByEventIDSQL = `
-	SELECT id, event_id, trace_parent, sequence_engine_key, state, current_node_index, sorted_nodes, owner_pod, lease_expires_at::text, trigger_payload
+	SELECT id, event_id, trace_parent, sequence_engine_key, state, current_node_index, sorted_nodes, owner_pod, lease_expires_at, trigger_payload
 	FROM workflows WHERE event_id = $1`
 
 // scanWorkflow decodes one workflows row. Shared so the pool-scoped and tx-scoped loaders cannot
 // drift apart in their column list.
+//
+// lease_expires_at is scanned as a time, not cast to text and dropped as it once was: the sweep
+// that fails timed-out approvals needs the real value, and a Workflow that reports a zero lease
+// while the row carries one is exactly the kind of lie that makes a reclaim path untestable.
 func scanWorkflow(row pgx.Row) (*domain.Workflow, error) {
 	var wf domain.Workflow
-	var ownerPod, leaseExpiresAt *string
+	var ownerPod *string
+	var leaseExpiresAt *time.Time
 	err := row.Scan(
 		&wf.ID, &wf.EventID, &wf.TraceParent, &wf.SequenceEngineKey, &wf.State,
 		&wf.CurrentNodeIndex, &wf.SortedNodes, &ownerPod, &leaseExpiresAt, &wf.TriggerPayload,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, domain.ErrTransient
+			// Deliberately Transient, and deliberately NOT errclass's verdict (which maps no-rows to
+			// Terminal): an approval can legitimately arrive before the changefeed has delivered
+			// the workflow's trigger, and retrying is the correct response to that race. This is
+			// the one documented exception to "one SQLSTATE taxonomy".
+			return nil, fmt.Errorf("%w: workflow not found (yet)", domain.ErrTransient)
 		}
-		return nil, err
+		return nil, classify(err)
 	}
 	if ownerPod != nil {
 		wf.OwnerPod = *ownerPod
 	}
+	if leaseExpiresAt != nil {
+		wf.LeaseExpiresAt = *leaseExpiresAt
+	}
 	return &wf, nil
+}
+
+// ListExpiredSuspended is the sweep's read: no lock, oldest first, bounded. A row can be listed
+// by every replica at once; FailWorkflow's NOWAIT lease is what serialises the actual failure.
+func (s *Store) ListExpiredSuspended(ctx context.Context, now time.Time, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT event_id FROM workflows
+		WHERE state = $1 AND lease_expires_at IS NOT NULL AND lease_expires_at < $2
+		ORDER BY lease_expires_at ASC
+		LIMIT $3`, string(domain.StateSuspended), now, limit)
+	if err != nil {
+		return nil, classify(err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, classify(err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, classify(rows.Err())
 }
 
 func (s *Store) LoadWorkflowByEventID(ctx context.Context, eventID string) (*domain.Workflow, error) {

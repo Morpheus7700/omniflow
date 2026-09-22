@@ -1,0 +1,53 @@
+{
+  "title": "OmniFlow — event spine",
+  "uid": "omniflow-spine",
+  "schemaVersion": 39,
+  "time": { "from": "now-30m", "to": "now" },
+  "refresh": "10s",
+  "panels": [
+    {
+      "type": "timeseries", "title": "Records processed / s by outcome",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "expr": "sum by (service, outcome) (rate(omniflow_consumer_records_total[1m]))", "legendFormat": "{{service}} {{outcome}}" } ]
+    },
+    {
+      "type": "stat", "title": "Dead-lettered (30m)",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "expr": "sum(increase(omniflow_consumer_records_total{outcome=\"dlq\"}[30m]))" } ],
+      "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } } }
+    },
+    {
+      "type": "stat", "title": "SSE clients",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "expr": "omniflow_sse_clients" } ]
+    },
+    {
+      "type": "timeseries", "title": "Transient retries / s",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "expr": "sum by (service) (rate(omniflow_consumer_retries_total[1m]))", "legendFormat": "{{service}}" } ]
+    },
+    {
+      "type": "timeseries", "title": "Workflow transitions (30m)",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "expr": "sum by (state) (increase(omniflow_workflow_transitions_total[30m]))", "legendFormat": "{{state}}" } ]
+    },
+    {
+      "type": "stat", "title": "Approvals expired (24h)",
+      "gridPos": { "x": 0, "y": 16, "w": 6, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "expr": "sum(increase(omniflow_approvals_expired_total[24h]))" } ],
+      "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 1 } ] } } }
+    },
+    {
+      "type": "stat", "title": "Agent spend (24h, micro-USD)",
+      "gridPos": { "x": 6, "y": 16, "w": 6, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "expr": "sum(increase(omniflow_agent_spend_micro_usd_total[24h]))" } ]
+    }
+  ]
+}

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -13,6 +15,8 @@ import (
 
 	"omniflow/internal/platform/crdbpool"
 	"omniflow/internal/platform/health"
+	"omniflow/internal/platform/kafkaconf"
+	"omniflow/internal/platform/telemetry"
 	inkafka "omniflow/services/commbot/internal/adapters/inbound/kafka"
 	"omniflow/services/commbot/internal/adapters/outbound/crdb"
 	"omniflow/services/commbot/internal/adapters/outbound/llm"
@@ -20,11 +24,6 @@ import (
 
 	"github.com/twmb/franz-go/pkg/kgo"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
-	"go.opentelemetry.io/otel/propagation"
-	"go.opentelemetry.io/otel/sdk/resource"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 )
 
 func main() {
@@ -44,18 +43,22 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	cfg := loadConfig()
+	cfg, err := loadConfig()
+	if err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
 
-	// ── OpenTelemetry ────────────────────────────────────────────────────────
-	tp, err := initTracer(ctx, cfg.otlpEndpoint)
+	// ── Logging + tracing + metrics, one call for every service ────────────
+	shutdownTelemetry, err := telemetry.Init(ctx, "commbot")
 	if err != nil {
 		return err
 	}
 	defer func() {
-		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = tp.Shutdown(sctx)
+		if err := shutdownTelemetry(context.Background()); err != nil {
+			slog.Error("telemetry shutdown", "error", err)
+		}
 	}()
+	tp := otel.GetTracerProvider()
 
 	// ── CockroachDB pool (idempotency + transactional outbox) ────────────────
 	// crdbpool, not pgxpool.New: it applies a statement_timeout so no query can hang forever.
@@ -73,14 +76,19 @@ func run() error {
 	svc := domain.NewCommBotService(gateway, repo, tp)
 
 	// ── Kafka client — auto-commit DISABLED (required by the retry/DLQ contract) ──
-	client, err := kgo.NewClient(
-		kgo.SeedBrokers(strings.Split(cfg.kafkaBootstrap, ",")...),
+	// Transport (brokers, TLS, SASL) comes from the environment via kafkaconf; the consumer
+	// contract — manual commit — is fixed here and must stay.
+	kopts, err := kafkaconf.FromEnv()
+	if err != nil {
+		return fmt.Errorf("kafka config: %w", err)
+	}
+	client, err := kgo.NewClient(append(kopts,
 		kgo.ConsumerGroup("commbot"),
 		kgo.ConsumeTopics(cfg.inputTopic),
 		kgo.DisableAutoCommit(),
-	)
+	)...)
 	if err != nil {
-		return err
+		return fmt.Errorf("kafka client: %w", err)
 	}
 	defer client.Close()
 
@@ -99,10 +107,15 @@ func run() error {
 	probes := health.New(health.DBCheck("crdb", pool))
 	mux := http.NewServeMux()
 	probes.Register(mux)
+	mux.Handle("/metrics", telemetry.MetricsHandler())
 	srv := &http.Server{
 		Addr:              ":8080",
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    64 << 10,
+		WriteTimeout:      15 * time.Second,
 	}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -115,7 +128,7 @@ func run() error {
 	// window the previous unconditional 200 handler papered over.
 	probes.MarkStarted()
 
-	slog.Info("commbot starting", "input_topic", cfg.inputTopic, "bootstrap", cfg.kafkaBootstrap)
+	slog.Info("commbot starting", "input_topic", cfg.inputTopic)
 	adapter.Start(ctx) // blocks until ctx is cancelled
 
 	sctx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -126,47 +139,43 @@ func run() error {
 	return nil
 }
 
-func initTracer(ctx context.Context, endpoint string) (*sdktrace.TracerProvider, error) {
-	exp, err := otlptracehttp.New(ctx, otlptracehttp.WithEndpoint(endpoint), otlptracehttp.WithInsecure())
-	if err != nil {
-		return nil, err
-	}
-	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exp),
-		sdktrace.WithResource(resource.NewWithAttributes(
-			semconv.SchemaURL,
-			semconv.ServiceName("commbot"),
-		)),
-	)
-	otel.SetTracerProvider(tp)
-	otel.SetTextMapPropagator(propagation.TraceContext{}) // W3C traceparent end-to-end
-	return tp, nil
-}
-
 type config struct {
-	kafkaBootstrap string
-	inputTopic     string
-	crdbDSN        string
-	liteLLMURL     string
-	liteLLMKey     string
-	otlpEndpoint   string
-	allowedHosts   []string
-	rateRPS        float64
-	rateBurst      int
+	inputTopic   string
+	crdbDSN      string
+	liteLLMURL   string
+	liteLLMKey   string
+	allowedHosts []string
+	rateRPS      float64
+	rateBurst    int
 }
 
-func loadConfig() config {
-	return config{
-		kafkaBootstrap: env("KAFKA_BOOTSTRAP", "localhost:9092"),
-		inputTopic:     env("COMMBOT_INPUT_TOPIC", "omniflow.communication.v1"),
-		crdbDSN:        env("CRDB_DSN", "postgresql://root@localhost:26257/defaultdb?sslmode=disable"),
-		liteLLMURL:     env("LITELLM_URL", "http://localhost:4000"),
-		liteLLMKey:     env("LITELLM_KEY", ""),
-		otlpEndpoint:   env("OTLP_ENDPOINT", "localhost:4318"),
-		allowedHosts:   splitCSV(env("OBJECT_STORE_HOSTS", "")), // e.g. "storage.googleapis.com,s3.amazonaws.com"
-		rateRPS:        envFloat("LLM_RATE_RPS", 10),
-		rateBurst:      envInt("LLM_RATE_BURST", 20),
+// loadConfig fails fast, naming the variable. Two of these used to be silent: CRDB_DSN defaulted
+// to a localhost `defaultdb` (contradicting the locked "DB name = omniflow" decision), and an empty
+// OBJECT_STORE_HOSTS made validateQuarantineURI reject EVERY email as terminal — 100% of traffic
+// dead-lettered while /readyz reported the service healthy. A refused boot is the honest failure.
+func loadConfig() (config, error) {
+	var errs []error
+	cfg := config{
+		inputTopic:   env("COMMBOT_INPUT_TOPIC", "omniflow.communication.v1"),
+		crdbDSN:      os.Getenv("CRDB_DSN"),
+		liteLLMURL:   env("LITELLM_URL", "http://localhost:4000"),
+		liteLLMKey:   os.Getenv("LITELLM_KEY"),
+		allowedHosts: splitCSV(os.Getenv("OBJECT_STORE_HOSTS")), // e.g. "storage.googleapis.com,s3.amazonaws.com"
 	}
+	if cfg.crdbDSN == "" {
+		errs = append(errs, errors.New("CRDB_DSN is not set"))
+	}
+	if len(cfg.allowedHosts) == 0 {
+		errs = append(errs, errors.New("OBJECT_STORE_HOSTS is empty — every quarantine URI would be rejected and every email dead-lettered"))
+	}
+	var err error
+	if cfg.rateRPS, err = envFloat("LLM_RATE_RPS", 10); err != nil {
+		errs = append(errs, err)
+	}
+	if cfg.rateBurst, err = envInt("LLM_RATE_BURST", 20); err != nil {
+		errs = append(errs, err)
+	}
+	return cfg, errors.Join(errs...)
 }
 
 func env(k, def string) string {
@@ -176,22 +185,31 @@ func env(k, def string) string {
 	return def
 }
 
-func envInt(k string, def int) int {
-	if v := os.Getenv(k); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
+// envInt / envFloat return an error for a malformed value rather than the default. Falling back
+// silently meant a typo in LLM_RATE_RPS ran the gateway at the default rate with nothing in the
+// logs to say so.
+func envInt(k string, def int) (int, error) {
+	v := os.Getenv(k)
+	if v == "" {
+		return def, nil
 	}
-	return def
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("%s=%q is not an integer", k, v)
+	}
+	return n, nil
 }
 
-func envFloat(k string, def float64) float64 {
-	if v := os.Getenv(k); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			return f
-		}
+func envFloat(k string, def float64) (float64, error) {
+	v := os.Getenv(k)
+	if v == "" {
+		return def, nil
 	}
-	return def
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s=%q is not a number", k, v)
+	}
+	return f, nil
 }
 
 func splitCSV(s string) []string {

@@ -2,6 +2,7 @@ package ports
 
 import (
 	"context"
+	"time"
 
 	"omniflow/internal/platform/aigov"
 	"omniflow/services/p2p-orchestrator/internal/core/domain"
@@ -46,6 +47,10 @@ type Checkpointer interface {
 	LoadWorkflowByEventIDTx(ctx context.Context, tx Transaction, eventID string) (*domain.Workflow, error)
 
 	AcquireLease(ctx context.Context, workflowID string) (Transaction, error)
+	// ListExpiredSuspended returns the event ids of workflows parked at the human gate whose lease
+	// expired before `now`, oldest first, at most `limit`. The sweep fails them one by one under
+	// their own row locks; this read takes no lock.
+	ListExpiredSuspended(ctx context.Context, now time.Time, limit int) ([]string, error)
 	CheckIdempotency(ctx context.Context, workflowID, nodeID string, attempt int) (bool, error)
 	SaveCheckpoint(ctx context.Context, tx Transaction, wf *domain.Workflow, nodeID string, attempt int, payload []byte) error
 

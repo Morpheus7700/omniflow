@@ -67,7 +67,8 @@ func main() {
 	repo := repository.NewReplayRepository(db)
 
 	// 2. Setup SSE Broker
-	sseBroker := api.NewSSEBroker()
+	// The broker resumes reconnecting clients from the replay repository (Last-Event-ID).
+	sseBroker := api.NewSSEBroker().WithResumer(repo)
 	go sseBroker.Run(ctx)
 
 	// 3. Setup Kafka Consumer
@@ -143,8 +144,25 @@ func main() {
 		})
 	}
 
-	mux.Handle("/api/stream", withCORS(http.HandlerFunc(sseBroker.StreamHandler)))
-	mux.Handle("/api/replay", withCORS(http.HandlerFunc(api.NewReplayHandler(repo).HandleReplay)))
+	// Security headers on every response. None of these were set: the read model is served to a
+	// browser, and a browser given no instructions will sniff types and allow framing.
+	withSecurity := func(h http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			w.Header().Set("X-Frame-Options", "DENY")
+			w.Header().Set("Referrer-Policy", "no-referrer")
+			w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+			h.ServeHTTP(w, r)
+		})
+	}
+
+	// Method-scoped patterns: `POST /api/replay` used to run the query. OPTIONS is answered by the
+	// CORS wrapper before the method pattern is consulted, so preflights still work.
+	replayLimiter := api.NewReplayLimiter()
+	mux.Handle("GET /api/stream", withSecurity(withCORS(http.HandlerFunc(sseBroker.StreamHandler))))
+	mux.Handle("OPTIONS /api/stream", withSecurity(withCORS(http.NotFoundHandler())))
+	mux.Handle("GET /api/replay", withSecurity(withCORS(replayLimiter.Middleware(http.HandlerFunc(api.NewReplayHandler(repo).HandleReplay)))))
+	mux.Handle("OPTIONS /api/replay", withSecurity(withCORS(http.NotFoundHandler())))
 
 	// viz-gateway had NO health endpoint at all — not even the unconditional "/" the other three
 	// carried — so nothing could distinguish "SSE broker running" from "process bound a port". It

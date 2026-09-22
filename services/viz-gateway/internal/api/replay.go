@@ -25,12 +25,12 @@ func (h *ReplayHandler) HandleReplay(w http.ResponseWriter, r *http.Request) {
 	// notices it working.
 	fromSeq, err := parseSeq(r.URL.Query().Get("from_seq"), 0)
 	if err != nil {
-		http.Error(w, "from_seq must be a non-negative integer", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid_from_seq", "from_seq must be a non-negative integer")
 		return
 	}
 	toSeq, err := parseSeq(r.URL.Query().Get("to_seq"), 0)
 	if err != nil {
-		http.Error(w, "to_seq must be a non-negative integer", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid_to_seq", "to_seq must be a non-negative integer")
 		return
 	}
 	// 0 means "no upper bound"; the SQL treats $2 = 0 as open-ended, so it is passed through rather
@@ -38,7 +38,7 @@ func (h *ReplayHandler) HandleReplay(w http.ResponseWriter, r *http.Request) {
 
 	limit, err := parseLimit(r.URL.Query().Get("limit"))
 	if err != nil {
-		http.Error(w, "limit must be an integer between 1 and "+strconv.Itoa(maxReplayLimit), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid_limit", "limit must be an integer between 1 and "+strconv.Itoa(maxReplayLimit))
 		return
 	}
 
@@ -47,11 +47,13 @@ func (h *ReplayHandler) HandleReplay(w http.ResponseWriter, r *http.Request) {
 		// The detail goes to the log, not to the browser. This previously returned err.Error(),
 		// which hands a caller the raw pgx text — table names, column names, and the SQLSTATE.
 		slog.Error("replay query failed", "from_seq", fromSeq, "to_seq", toSeq, "error", err)
-		http.Error(w, "failed to load movements", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "replay_failed", "failed to load movements")
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	// A replay window is a point-in-time read of live data; a cached copy is a stale ledger.
+	w.Header().Set("Cache-Control", "no-store")
 	if err := json.NewEncoder(w).Encode(events); err != nil {
 		// Nothing can be sent to the client now — 200 and the Content-Type are already on the wire,
 		// and part of the body may be too. Logging is the only honest option, and it matters: a

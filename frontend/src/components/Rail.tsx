@@ -3,8 +3,9 @@
 // FormEvent is imported as a type rather than reached through the `React.` namespace: with
 // jsx: "react-jsx" there is no React import in scope, and namespace access requires
 // allowUmdGlobalAccess, which this project does not set.
-import { useState, type FormEvent } from 'react';
-import { useStore } from '@/store';
+import { useMemo, useState, type FormEvent } from 'react';
+import { useStore, isFailure } from '@/store';
+import type { StreamStatus } from '@/hooks/useEventBuffer';
 
 /**
  * The left rail: what is true right now, and the controls to move through time.
@@ -18,7 +19,7 @@ export function Rail({
   onReplay,
   onGoLive,
 }: {
-  status: string;
+  status: StreamStatus;
   replaying: boolean;
   onReplay: (from: bigint, to: bigint) => void;
   onGoLive: () => void;
@@ -26,18 +27,26 @@ export function Rail({
   const events = useStore((s) => s.events);
   const watermark = useStore((s) => s.watermark);
 
-  const settled = events.filter((e) => BigInt(e.sequence_engine_key) <= watermark);
-  const value = settled.reduce((acc, e) => acc + (e.metrics?.value ?? 0), 0);
-  const exceptions = settled.filter(
-    (e) => e.metrics?.sla_breached || e.status === 'FAILURE',
-  ).length;
+  // One pass, memoised: three filters with a BigInt parse per row ran on every render before.
+  const { settledCount, value, exceptions } = useMemo(() => {
+    let settledCount = 0;
+    let value = 0;
+    let exceptions = 0;
+    for (const e of events) {
+      if (BigInt(e.sequence_engine_key) > watermark) continue;
+      settledCount++;
+      value += e.metrics?.value ?? 0;
+      if (isFailure(e)) exceptions++;
+    }
+    return { settledCount, value, exceptions };
+  }, [events, watermark]);
 
   return (
     <div className="flex h-full flex-col gap-8">
       <Connection status={status} />
 
       <dl className="flex flex-col">
-        <Figure label="Settled orders" value={settled.length.toLocaleString()} />
+        <Figure label="Settled orders" value={settledCount.toLocaleString()} />
         <Figure
           label="Settled value"
           value={value.toLocaleString(undefined, {
@@ -85,27 +94,30 @@ function Figure({
  * Connection state is a fact about the record, not a decoration: if the stream is down the figures
  * above are stale, and the reader needs to know that without hunting for a toast.
  */
-function Connection({ status }: { status: string }) {
-  const map: Record<string, { label: string; tone: string }> = {
-    connecting: { label: 'Connecting to the event stream', tone: 'text-[var(--muted)]' },
-    connected: { label: 'Live', tone: 'text-[var(--settled)]' },
-    error: { label: 'Stream disconnected — figures below are stale', tone: 'text-[var(--exception)]' },
-    replay_finished: { label: 'Showing a replayed window', tone: 'text-[var(--muted)]' },
+function Connection({ status }: { status: StreamStatus }) {
+  const map: Record<StreamStatus, { label: string; tone: string; dot: string }> = {
+    connecting: { label: 'Connecting to the event stream', tone: 'text-[var(--muted)]', dot: 'bg-[var(--muted)]' },
+    connected: { label: 'Live', tone: 'text-[var(--settled)]', dot: 'bg-[var(--settled)]' },
+    reconnected: {
+      label: 'Live — reconnected; the gap was replayed from the gateway',
+      tone: 'text-[var(--settled)]',
+      dot: 'bg-[var(--settled)]',
+    },
+    error: { label: 'Stream disconnected — figures below are stale', tone: 'text-[var(--exception)]', dot: 'bg-[var(--exception)]' },
+    replay_finished: { label: 'Showing a replayed window', tone: 'text-[var(--muted)]', dot: 'bg-[var(--muted)]' },
+    replay_failed: {
+      label: 'That window could not be replayed — the gateway refused or is unreachable',
+      tone: 'text-[var(--exception)]',
+      dot: 'bg-[var(--exception)]',
+    },
   };
-  const s = map[status] ?? { label: status, tone: 'text-[var(--muted)]' };
+  const s = map[status];
 
+  // role="status" is a polite live region: a reader is told the stream dropped without hunting
+  // for a toast, and without the announcement interrupting them mid-sentence.
   return (
-    <p className={`flex items-center gap-2 text-[13px] ${s.tone}`}>
-      <span
-        aria-hidden
-        className={`inline-block h-1.5 w-1.5 rounded-full ${
-          status === 'connected'
-            ? 'bg-[var(--settled)]'
-            : status === 'error'
-              ? 'bg-[var(--exception)]'
-              : 'bg-[var(--muted)]'
-        }`}
-      />
+    <p role="status" aria-live="polite" className={`flex items-center gap-2 text-[13px] ${s.tone}`}>
+      <span aria-hidden className={`inline-block h-1.5 w-1.5 rounded-full ${s.dot}`} />
       {s.label}
     </p>
   );
@@ -161,7 +173,7 @@ function Replay({
       <div className="mt-4 flex gap-2">
         <button
           type="submit"
-          className="border border-[var(--ink)] bg-[var(--ink)] px-3 py-1.5 text-[13px] text-[var(--paper)] transition-opacity hover:opacity-85"
+          className="min-h-11 border border-[var(--ink)] bg-[var(--ink)] px-4 text-[13px] text-[var(--paper)] transition-opacity hover:opacity-85"
         >
           Replay
         </button>
@@ -169,7 +181,7 @@ function Replay({
           <button
             type="button"
             onClick={onGoLive}
-            className="border border-[var(--rule)] px-3 py-1.5 text-[13px] transition-colors hover:border-[var(--ink)]"
+            className="min-h-11 border border-[var(--rule)] px-4 text-[13px] transition-colors hover:border-[var(--ink)]"
           >
             Return to live
           </button>
@@ -195,9 +207,12 @@ function Field({
       </span>
       <input
         value={value}
+        // inputMode only (a keyboard hint). NOT `pattern`: a pattern makes the browser block
+        // submit with its own generic bubble, so the form's specific messages — "sequence keys are
+        // whole numbers", "the end of the window must come after the start" — never run.
         inputMode="numeric"
         onChange={(e) => onChange(e.target.value)}
-        className="tnum mt-1 w-full border-b border-[var(--rule)] bg-transparent py-1 text-[13px] focus:border-[var(--settled)] focus:outline-none"
+        className="tnum mt-1 min-h-11 w-full border-b border-[var(--rule)] bg-transparent text-[13px] focus:border-[var(--settled)]"
       />
     </label>
   );

@@ -12,24 +12,22 @@ const (
 	StageReceived        VisualizationStage = "RECEIVED"
 )
 
+// ProjectionEvent is the wire shape of one ledger row, on both the SSE stream and the replay
+// response. It is mirrored field-for-field by P2PEvent in frontend/src/store/index.ts; change
+// both or neither. (cdc_emit_ts and edge were removed: nothing populated them, and `omitempty` on
+// a time.Time never omits, so every row carried a zero timestamp the frontend ignored.)
 type ProjectionEvent struct {
 	AggregateID       string             `json:"aggregate_id"`
 	Stage             VisualizationStage `json:"stage"`
 	Status            string             `json:"status"`
 	SequenceEngineKey string             `json:"sequence_engine_key"` // string for safe JS parsing
 	OccurredAt        time.Time          `json:"occurred_at"`
-	CDCEmitTs         time.Time          `json:"cdc_emit_ts,omitempty"`
 	TraceParent       string             `json:"trace_parent,omitempty"`
-	Edge              *Edge              `json:"edge,omitempty"`
 	Metrics           *Metrics           `json:"metrics,omitempty"`
 }
 
-type Edge struct {
-	Source string `json:"source"`
-	Target string `json:"target"`
-}
-
 type Metrics struct {
-	Value       float64 `json:"value,omitempty"`
+	// Not omitempty: a genuine zero-value movement must reach the ledger as 0, not as "—".
+	Value       float64 `json:"value"`
 	SLABreached bool    `json:"sla_breached,omitempty"`
 }

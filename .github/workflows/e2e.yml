@@ -146,6 +146,10 @@ jobs:
         run: npm run lint
       - name: typecheck
         run: npx tsc --noEmit
+      # vitest: the store's merge/dedup/bound invariants, the hook's no-gap/no-dup handover with a
+      # scripted EventSource, the windowed ledger. The frontend had zero tests before these.
+      - name: unit tests
+        run: npm test
       # `next build` here, not only inside the six boot jobs: a frontend build failure used to take
       # ~25 minutes and the whole Docker stack to report, and it took down every proof with it.
       - name: build

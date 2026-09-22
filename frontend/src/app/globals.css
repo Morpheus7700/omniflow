@@ -14,6 +14,25 @@
   --muted: #5f6b75; /* secondary text and labels */
   --settled: #1b4d3e; /* deep ledger green: the settlement guarantee */
   --exception: #a4243b; /* stamp red: reserved strictly for breaches and failures */
+  --scroll-thumb: #c3cad0;
+  color-scheme: light dark;
+}
+
+/*
+  The same document under lamplight. Contrast is preserved: ink on paper ≥ 12:1, muted ≥ 4.6:1,
+  settled green and exception red both ≥ 4.5:1 on the dark paper.
+*/
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #16191c;
+    --paper-sunk: #1f2327;
+    --ink: #e8ebe6;
+    --rule: #33393f;
+    --muted: #a3adb6;
+    --settled: #7fc8a9;
+    --exception: #f08a9b;
+    --scroll-thumb: #4a525a;
+  }
 }
 
 @theme inline {
@@ -68,7 +87,7 @@ body {
   background: var(--paper-sunk);
 }
 ::-webkit-scrollbar-thumb {
-  background: #c3cad0;
+  background: var(--scroll-thumb);
   border: 2px solid var(--paper-sunk);
   border-radius: 999px;
 }
@@ -77,6 +96,13 @@ body {
 }
 
 :focus-visible {
+  outline: 2px solid var(--settled);
+  outline-offset: 2px;
+}
+
+/* Inputs and buttons keep the global ring; no utility on them may remove the outline. */
+input:focus-visible,
+button:focus-visible {
   outline: 2px solid var(--settled);
   outline-offset: 2px;
 }

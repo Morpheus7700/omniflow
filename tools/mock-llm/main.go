@@ -15,6 +15,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"omniflow/internal/platform/health"
 )
 
 // chatResponse mirrors the exact subset CommBot's gateway decodes. The classifier prompt instructs
@@ -56,6 +58,13 @@ const hugePO = `{"vendor_id":"VENDOR-MOCK-1","currency":"USD","lines":[` +
 	`],"total_amount":"250000.0000"}`
 
 func main() {
+	// Container healthcheck mode, same mechanism as the services: the image is distroless, so the
+	// binary probes itself (HEALTH_PROBE_URL points it at this process's /healthz on port 4000).
+	// Without this the orchestrator could only `depends_on: service_started` the mock, and the first
+	// draft_po call in a fresh stack raced the listener coming up.
+	if health.RunProbe(os.Args[1:]) {
+		return
+	}
 	addr := env("MOCK_LLM_ADDR", ":4000")
 	// The canned classification. Overridable so a test can drive a different branch.
 	intent := env("MOCK_LLM_INTENT", "1")

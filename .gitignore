@@ -58,3 +58,13 @@ Architecture base */
 # ---- Claude Code local overrides (personal, never shared) ----
 CLAUDE.local.md
 .claude/settings.local.json
+
+# ---- Boot-proof artefacts ----
+# scripts/lib.sh writes the full container logs of a failed proof here; CI uploads them as an artifact.
+.proof-logs/
+
+# ---- Tooling droppings ----
+# The ruflo plugin writes these into any repo it is opened in; they are per-machine state, not project files.
+.claude-flow/
+.claude/proven-config.json
+.claude/.proven-config-version

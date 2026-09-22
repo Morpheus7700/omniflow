@@ -161,7 +161,7 @@ var errAlreadyProcessed = errors.New("event already processed")
 func (c *Consumer) handle(ctx context.Context, email *domain.VendorEmail) error {
 	done, err := c.idempotency.AlreadyProcessed(ctx, email.EventID)
 	if err != nil {
-		return fmt.Errorf("%w: idempotency check: %v", domain.ErrTransient, err)
+		return fmt.Errorf("%w: idempotency check: %w", domain.ErrTransient, err)
 	}
 	if done {
 		return errAlreadyProcessed

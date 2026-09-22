@@ -4,15 +4,18 @@ name: OmniFlow CI + E2E
 # procurement event flows end-to-end — through the real CRDB→Kafka changefeed spine, the DAG
 # orchestrator's human-in-the-loop suspend/resume, and out to the viz SSE stream. No simulated logs.
 #
-# Test tiers, fastest first: `build` runs unit tests (no services), `integration` runs the tag-gated
-# testcontainers suite against a real CockroachDB, and the four boot jobs run the full stack.
+# Test tiers, fastest first: `build`/`lint`/`frontend` need no services and run in a couple of
+# minutes; `integration` runs the tag-gated testcontainers suite against a real CockroachDB; the six
+# boot jobs run the full stack, one proof each. `govulncheck` is the only security job that gates.
 #
-# OPTIONAL repo secrets (Settings → Secrets and variables → Actions):
-#   CRDB_LICENSE  — CockroachDB Enterprise (free tier) license key. NOT needed here: the stack runs
-#                   single-node v24.3+, which does Kafka-sink changefeeds license-free. Only a
-#                   multi-node cluster would require it.
-#   CRDB_ORG      — the organization string the license was issued to (must match exactly).
-# No job is skipped for a missing license; crdb-init fails loudly if a key ever becomes necessary.
+# OPTIONAL repo secrets: CRDB_LICENSE / CRDB_ORG. NOT needed — the stack runs single-node, which does
+# Kafka-sink changefeeds license-free. No job is skipped for a missing license; crdb-init fails loudly
+# if a key ever becomes necessary.
+#
+# Every third-party action is pinned to a commit SHA with the version as a trailing comment.
+# A tag is a moving pointer that its owner (or an attacker with their credentials) can re-point;
+# a SHA is immutable. Dependabot's github-actions ecosystem understands the `sha # vX.Y.Z` form
+# and bumps both together.
 
 on:
   push:
@@ -20,146 +23,156 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Supersede in-flight runs for the same ref. Without this every push spawns a full parallel run while
-# the previous one keeps burning runners — during the CI convergence work several obsolete runs were
-# still executing (some pinned at the 25-minute job cap) after their fix had already been pushed,
-# which wasted minutes and made the signal harder to read.
+# Supersede in-flight runs for the same ref: without this every push spawns a full parallel run while
+# the previous one keeps burning runners, some pinned at the 25-minute job cap.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege at the workflow level; the one job that uploads SARIF widens its own token.
 permissions:
   contents: read
 
-# Go toolchain: pinned to an EXACT patch, deliberately, in every job.
+# Go toolchain: ONE pin, in go.mod, read by every job.
 #
-# It used to read `go-version: '1.25'`, and that floating spec silently broke the security gate.
-# `setup-go` is satisfied by any 1.25.x already in the runner image's tool cache, so it keeps
-# handing back the cached patch instead of fetching the newest one. On 2026-08-14 the
-# actions/go-versions manifest published 1.25.13 at 03:55Z; a run at 12:35Z the SAME DAY still
-# resolved to 1.25.12 and govulncheck failed with seven reachable stdlib CVEs
-# (GO-2026-6218/6091/6090/6089/6088/5972/5026), every one of them "Fixed in: go1.25.13". Re-running
-# would not have fixed it. Only an explicit version does.
+# The `toolchain go1.x.y` directive in both go.mod files is the single source of truth for the Go
+# version this project builds, tests, scans and ships with. `setup-go` reads it via
+# `go-version-file` (it honours `toolchain` over `go`), the Dockerfiles pin the matching golang image
+# by digest, and a developer's `go` command auto-downloads it. The previous design pinned an exact
+# version in ten YAML sites and one of them was missed — that job silently ran a floating '1.25' and
+# scanned a stdlib the project never shipped, which is the exact hole the pin existed to close.
 #
-# The pin is 1.26.6 — NOT 1.25.13 — because all six Go builder stages use `FROM golang:1.26`, so a
-# CI pinned to the 1.25 line was scanning a stdlib this project never ships. 1.26.6 and 1.25.13 were
-# published in the same manifest update (the same coordinated security release), so it carries the
-# same seven fixes and closes the CI-vs-artifact divergence at the same time. go.mod stays at
-# `go 1.25.0`: that declares the minimum language version, not the build toolchain.
-#
-# The cost is a maintenance obligation, and it is intentional. Dependabot's github-actions ecosystem
-# bumps action refs only — it will NEVER touch a go-version value — so a future toolchain CVE means
-# this gate goes red until a human bumps these pins. That is the same trade already made for
-# govulncheck@v1.6.0 and Trivy v0.72.0 below: a security gate that silently re-floats is not a gate.
-# Bump all nine sites here and the one in codeql.yml together.
+# The pin is still a manual obligation: Dependabot bumps action refs and image digests, never a
+# toolchain line. When govulncheck reports a stdlib CVE "Fixed in: go1.x.y", bump go.mod (both
+# modules) and the golang image digests together.
+
+env:
+  GOTOOLCHAIN: auto
 
 jobs:
   build:
     name: build + vet + unit tests (both modules)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26.6'
-      # Formatting is a gate, not a suggestion. It is checked before anything else because it is the
-      # cheapest possible signal and because an unformatted tree is how "we have standards" quietly
-      # becomes "we had standards". gofmt is semantics-preserving by construction, so this can never
-      # fail for a reason that is really a behaviour change.
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            services/viz-gateway/go.sum
+      # Formatting is a gate, not a suggestion: it is the cheapest possible signal, and gofmt is
+      # semantics-preserving by construction so it can never fail for a reason that is really a
+      # behaviour change. `./internal` is included — the shared platform packages were unformatted-
+      # by-omission for a month because this list stopped at the service directories.
       - name: gofmt (both modules)
         run: |
-          unformatted="$(gofmt -l ./services ./tools ./contracts)"
+          unformatted="$(gofmt -l ./services ./tools ./contracts ./internal)"
           if [ -n "$unformatted" ]; then
             echo "::error::These files are not gofmt-clean:"
             echo "$unformatted"
-            echo "Run: gofmt -w ./services ./tools ./contracts"
+            echo "Run: gofmt -w ./services ./tools ./contracts ./internal"
             exit 1
           fi
-      # Unit tests need no Docker and no services — they run on every push in seconds. The
-      # testcontainers suite is excluded here by its `integration` build tag (see the job below).
+      # -race on a codebase whose whole thesis is concurrent consumers and manual commit ordering.
+      # The testcontainers suite is excluded here by its `integration` build tag (see that job).
       - name: root module
         run: |
           CGO_ENABLED=0 go build ./...
           go vet ./...
-          go test ./...
+          go test -race -count=1 ./...
       - name: viz-gateway module
         working-directory: services/viz-gateway
         run: |
           CGO_ENABLED=0 go build ./...
           go vet ./...
-          go test ./...
+          go test -race -count=1 ./...
 
-      # The frontend had a `lint` script and nothing that ran it, so `next lint` was a button nobody
-      # pressed: a react-hooks/set-state-in-effect error sat on master unnoticed because the only
-      # frontend signal in CI was `next build` inside the four boot jobs, and a lint error does not
-      # fail a build. That is the same shape as the report-only-scanner problem described on the
-      # govulncheck job below — a check that cannot fail anything is a check nobody reads.
-      #
-      # Type-checking is separate from linting and neither implies the other: `next build` does run
-      # tsc, but only in the boot jobs, which cost ~25 minutes and pull the whole Docker stack to
-      # tell you about a type error. Here it costs seconds and runs on every push.
-      #
-      # Node 26 matches frontend/Dockerfile's builder stage, for the same reason the Go toolchain is
-      # pinned to the version the Go images build with: CI should exercise the runtime that ships.
-      - uses: actions/setup-node@v7
+  lint:
+    name: lint (golangci-lint + shellcheck)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          node-version: '26'
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            services/viz-gateway/go.sum
+      # Rules live in .golangci.yml at the repo root. Pinned linter version, same standard as the
+      # scanners below: an unpinned linter release can redden the build with no code change.
+      - name: golangci-lint (root module)
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.13.2
+      - name: golangci-lint (viz-gateway module)
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.13.2
+          working-directory: services/viz-gateway
+      # The boot proofs and init scripts are load-bearing shell; a quoting bug in one of them once
+      # ran a job to its 25-minute cap. Warning level and above gate; style-level findings do not.
+      - name: shellcheck
+        uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # 2.0.0
+        with:
+          severity: warning
+          scandir: ./scripts
+          additional_files: infrastructure/init/crdb-init.sh infrastructure/init/kafka-init.sh
+
+  frontend:
+    name: frontend (lint + typecheck + build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Node 24 matches frontend/Dockerfile's builder stage (Active LTS), for the same reason the Go
+      # toolchain matches the Go images: CI should exercise the runtime that ships.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: frontend/.nvmrc
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      - name: frontend typecheck
-        working-directory: frontend
-        run: |
-          npm ci
-          npx tsc --noEmit
-      # `npm run lint` is NOT gated, and that is a finding rather than an omission. Under the
-      # dependency set npm ci installs today — ESLint 10.8.1 (#49) with the eslint-plugin-react
-      # that eslint-config-next 16.3.0 (#45) pulls in — eslint aborts before linting anything:
-      #   TypeError: Error while loading rule 'react/display-name':
-      #     contextOrFilename.getFilename is not a function
-      # That is the plugin using an ESLint 9 context API that ESLint 10 removed, i.e. broken
-      # upstream, not broken here. Gating on it would block every PR on a bug we cannot fix.
-      #
-      # It runs anyway so the output is visible, and `|| true` keeps it advisory — with the tripwire
-      # below, because an advisory step that silently rots is the exact failure this repo already
-      # documented for gosec and Trivy. When the plugin ships an ESLint 10 build, lint starts
-      # SUCCEEDING, the tripwire fires, and whoever sees it deletes these lines and gates it.
-      - name: frontend lint (advisory — blocked upstream, see comment)
-        working-directory: frontend
-        run: |
-          if npm run lint; then
-            echo "::warning::eslint now passes — the upstream incompatibility is fixed. Promote this step to a gate and delete the || true."
-          else
-            echo "::notice::eslint still failing; expected while eslint-plugin-react lags ESLint 10."
-          fi
-        continue-on-error: true
+      - run: npm ci --no-audit --no-fund
+      # Lint GATES. It was advisory for a month because eslint-config-next's bundled
+      # eslint-plugin-react uses an ESLint 9 API that ESLint 10 removed; the fix is to run the ESLint
+      # line the toolchain supports (9.x, pinned in package.json, Dependabot ignores >=10 with the
+      # reason) rather than run a newer ESLint that cannot lint anything.
+      - name: lint
+        run: npm run lint
+      - name: typecheck
+        run: npx tsc --noEmit
+      # `next build` here, not only inside the six boot jobs: a frontend build failure used to take
+      # ~25 minutes and the whole Docker stack to report, and it took down every proof with it.
+      - name: build
+        run: npm run build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
 
   # Reachability-based CVE scanning, and the ONLY security job here that actually gates.
-  #
-  # gosec runs `-no-fail` and Trivy runs `--exit-code 0`, both deliberately: they are broad,
-  # manifest-and-pattern based, and noisy enough that gating on them would train everyone to ignore
-  # a red build. That is a reasonable trade — but it left a real gap, because "report-only" meant
-  # nobody was reading them. A scan on master found FIVE vulnerabilities our code genuinely reaches,
-  # sitting in plain sight in the Trivy SARIF the whole time.
-  #
-  # govulncheck is different in kind: it walks the call graph and reports a vulnerability only if
-  # your code actually reaches the affected symbol. That makes its output small and true enough to
-  # block on, which is the entire point of adding it. If this job goes red, a reachable CVE landed —
-  # fix the dependency, do not add an exclusion.
-  #
-  # Both modules are scanned. viz-gateway has its own go.mod and is invisible to a root-module scan;
-  # it was carrying a vulnerable golang.org/x/text that the root scan reported as clean.
+  # gosec and Trivy (below) are report-only, deliberately: they are broad and noisy enough that gating
+  # on them trains everyone to ignore a red build. govulncheck walks the call graph and reports a
+  # vulnerability only if the code actually reaches the affected symbol — small and true enough to
+  # block on. If this job goes red, a reachable CVE landed: fix the dependency, do not add an exclusion.
+  # Both modules are scanned; viz-gateway has its own go.mod and is invisible to a root-module scan.
   govulncheck:
     name: govulncheck (reachable CVEs, gating)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26.6'
-      # Pinned to an immutable tag, not @latest — same standard the Trivy install below follows.
-      # A security job that fetches an unpinned toolchain on every run undercuts its own purpose,
-      # and @latest also makes the gate non-reproducible: a scanner bump could turn the build red
-      # without a single line of our code changing. Bump this tag deliberately, like any other pin.
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            services/viz-gateway/go.sum
+      # Pinned to an immutable tag, not @latest — a scanner bump must not turn the build red on its
+      # own. Bump deliberately, like any other pin.
       - name: install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
       - name: root module
@@ -174,200 +187,216 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15   # container pull + boot should be minutes; a stall must fail fast, not hang
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26.6'
+          go-version-file: go.mod
       # ubuntu-latest runners ship a running Docker daemon, which is all testcontainers needs.
       # These cover what fakes cannot: single-transaction atomicity, the exactly-once idempotency
-      # guard, lot ordering, and DECIMAL/INT8 fidelity through real SQL.
+      # guard, lot ordering, and DECIMAL/INT8 fidelity through real SQL. The CockroachDB image is
+      # read from docker-compose.yml so the tests and the stack cannot drift apart.
       - name: root module
-        run: go test -tags=integration -timeout 15m ./...
+        run: go test -tags=integration -timeout 15m -count=1 ./...
+
+  # ---- Boot proofs -------------------------------------------------------------------------------
+  # Each job runs one scripts/*.sh proof on the full compose stack. They share scripts/lib.sh, which
+  # boots, gates on kafka-init and crdb-init, waits for every service's real healthcheck, and on
+  # failure writes the complete container logs to .proof-logs/ — uploaded below as an artifact, so a
+  # container that died after logging more than a tail's worth is no longer unrecoverable.
+  #
+  # None of these is skipped for fork PRs any more. A job-level `if:` skip counts as PASSING for a
+  # required check, so a fork PR could go green with zero end-to-end coverage. The skip existed for
+  # a license secret that is no longer needed.
+  #
+  # timeout-minutes matters: a Kafka-healthcheck or changefeed stall must fail fast and clean rather
+  # than run to the 6-hour cap — and note GitHub reports a timeout expiry as "cancelled", not
+  # "failure". If a job's duration equals its timeout, it hung.
 
   e2e:
     name: boot stack + seed E2E
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 25   # a Kafka-healthcheck / changefeed stall must fail fast+clean, not hang to the 6h cap
-    # Skip cleanly when the license secret is absent (e.g. fork PRs).
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    timeout-minutes: 25
     env:
       CRDB_LICENSE: ${{ secrets.CRDB_LICENSE }}
       CRDB_ORG: ${{ secrets.CRDB_ORG }}
     steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26.6'
-
-      # Single source of truth: scripts/e2e.sh boots the stack, waits for crdb-init, asserts >=3
-      # running changefeeds, connects to the SSE stream BEFORE seeding (the gateway has no backlog),
-      # seeds one event through the real changefeed spine + HITL approval, asserts the seeded
-      # sequence_engine_key reaches /api/stream, dumps logs on failure, and always tears down.
-      # CRDB_LICENSE is optional (single-node v24.3+ runs changefeeds license-free); passed through
-      # via env if the secret is set, ignored if not. The job runs either way — no skip.
+          go-version-file: go.mod
+      # scripts/e2e.sh boots the stack, asserts the full topic topology and ≥3 running changefeeds,
+      # waits for every service to be READY, connects to the SSE stream BEFORE seeding (the gateway
+      # has no backlog), seeds one event through the real changefeed spine + HITL approval, and
+      # asserts the seeded sequence_engine_key reaches /api/stream.
       - name: Run end-to-end proof
         run: bash scripts/e2e.sh
+      - name: Upload container logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: proof-logs-e2e
+          path: .proof-logs/
+          if-no-files-found: ignore
 
   failtest-resume:
     name: test durable checkpoint resume
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 25   # a Kafka-healthcheck / changefeed stall must fail fast+clean, not hang to the 6h cap
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    timeout-minutes: 25
     env:
       CRDB_LICENSE: ${{ secrets.CRDB_LICENSE }}
       CRDB_ORG: ${{ secrets.CRDB_ORG }}
     steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26.6'
-
+          go-version-file: go.mod
       - name: Run pod survival test
         run: bash scripts/failtest_killed_pod.sh
+      - name: Upload container logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: proof-logs-resume
+          path: .proof-logs/
+          if-no-files-found: ignore
 
   failtest-exactly-once:
     name: test exactly-once delivery suppression
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 25   # a Kafka-healthcheck / changefeed stall must fail fast+clean, not hang to the 6h cap
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    timeout-minutes: 25
     env:
       CRDB_LICENSE: ${{ secrets.CRDB_LICENSE }}
       CRDB_ORG: ${{ secrets.CRDB_ORG }}
     steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26.6'
-
+          go-version-file: go.mod
       - name: Run exactly-once test
         run: bash scripts/failtest_exactly_once.sh
+      - name: Upload container logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: proof-logs-exactly-once
+          path: .proof-logs/
+          if-no-files-found: ignore
 
   failtest-restatement:
     name: test FIFO late-arrival restatement
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 25   # a Kafka-healthcheck / changefeed stall must fail fast+clean, not hang to the 6h cap
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    timeout-minutes: 25
     env:
       CRDB_LICENSE: ${{ secrets.CRDB_LICENSE }}
       CRDB_ORG: ${{ secrets.CRDB_ORG }}
     steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26.6'
-
+          go-version-file: go.mod
       - name: Run FIFO restatement test
         run: bash scripts/failtest_fifo_restatement.sh
+      - name: Upload container logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: proof-logs-restatement
+          path: .proof-logs/
+          if-no-files-found: ignore
 
   failtest-dlq-poison:
     name: test DLQ poison-pill routing
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 25   # a Kafka-healthcheck / changefeed stall must fail fast+clean, not hang to the 6h cap
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    timeout-minutes: 25
     env:
       CRDB_LICENSE: ${{ secrets.CRDB_LICENSE }}
       CRDB_ORG: ${{ secrets.CRDB_ORG }}
     steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26.6'
-
+          go-version-file: go.mod
       # The only test that exercises the dead-letter path. Every consumer commits its offset ONLY
       # after DLQ delivery is confirmed, so a broken DLQ wedges the partition permanently while every
-      # happy-path job stays green. Asserts: poison pill reaches the .dlq topic, the source offset is
-      # committed (lag drains to 0), and a VALID message after it still processes.
+      # happy-path job stays green. Asserts both a wire-level and a semantic (protovalidate) poison
+      # pill reach the .dlq topic, and that a VALID message after them still processes.
       - name: Run DLQ poison-pill test
         run: bash scripts/failtest_dlq_poison.sh
+      - name: Upload container logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: proof-logs-dlq-poison
+          path: .proof-logs/
+          if-no-files-found: ignore
 
   failtest-agent-exactly-once:
     name: test agent exactly-once effect
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 25   # a Kafka-healthcheck / changefeed stall must fail fast+clean, not hang to the 6h cap
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    timeout-minutes: 25
     env:
       CRDB_LICENSE: ${{ secrets.CRDB_LICENSE }}
       CRDB_ORG: ${{ secrets.CRDB_ORG }}
     steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.25'
-
+          go-version-file: go.mod
       # The proof for the agent layer. The drafting agent calls a model OUTSIDE the workflow
       # transaction — it must, or a multi-second LLM call would hold a row lock — which makes node
-      # execution at-least-once by construction. This kills the orchestrator mid-workflow and
-      # asserts that the resumed run does NOT issue a second purchase order: at-least-once
-      # execution, exactly-once EFFECT, enforced by a deterministic idempotency key rather than by
-      # hoping the crash does not happen.
+      # execution at-least-once by construction. This kills the orchestrator mid-workflow and asserts
+      # the resumed run does NOT issue a second purchase order: at-least-once execution, exactly-once
+      # EFFECT, enforced by a deterministic idempotency key.
       - name: Run agent exactly-once test
         run: bash scripts/failtest_agent_exactly_once.sh
+      - name: Upload container logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: proof-logs-agent-exactly-once
+          path: .proof-logs/
+          if-no-files-found: ignore
 
   security:
     name: security scan (gosec + trivy)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
       security-events: write   # upload SARIF to the repo Security tab (free on public repos)
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26.6'
-
-      # Pinned, like govulncheck and Trivy. This read `@latest` while the comment on the
-      # govulncheck job three hundred lines up said "Pin the scanner to a tag, not @latest, or a
-      # scanner release can redden the build with no code change" — the rule was written down and
-      # then not applied here. gosec is report-only so an unpinned bump could not break a merge,
-      # but it could silently change the finding count between two runs of identical code, which is
-      # exactly what makes a report untrustworthy. Bump this tag deliberately.
+          go-version-file: go.mod
+      # Report-only (-no-fail): findings are triaged in the Security tab, not gated on — see the
+      # govulncheck job for why. -exclude-generated skips protoc output, whose unsafe calls are
+      # protoc-gen-go's own and cannot be acted on; unactionable findings are what teach people to
+      # skim the list. Pinned like every other scanner.
       - name: gosec — Go SAST (both modules)
         run: |
           go install github.com/securego/gosec/v2/cmd/gosec@v2.28.0
-          # -no-fail: report findings without gating the build; we triage via the Security tab.
-          #
-          # -exclude-generated: skip protoc output. contracts/**/*.pb.go carried EIGHT permanent
-          # G103 "use of unsafe calls" warnings that no one can act on — the unsafe is protoc-gen-go's
-          # own, regenerated on every buf build, and hand-editing it is not an option. Findings that
-          # cannot be fixed are not signal; they are the thing that teaches you to skim the list, and
-          # this repo already has that lesson written down ("report-only scanners become unread
-          # scanners"). Five REAL alerts sat unnoticed on master next to that noise until this week.
-          # gosec detects generated files by the standard "Code generated ... DO NOT EDIT." header,
-          # so this excludes exactly the files nobody owns and nothing else.
           gosec -no-fail -exclude-generated -fmt sarif -out gosec-root.sarif ./...
           ( cd services/viz-gateway && gosec -no-fail -exclude-generated -fmt sarif -out ../../gosec-viz.sarif ./... )
-      - name: upload gosec (root)
-        uses: github/codeql-action/upload-sarif@v4.38.0
-        with:
-          sarif_file: gosec-root.sarif
-          category: gosec-root
-      - name: upload gosec (viz-gateway)
-        uses: github/codeql-action/upload-sarif@v4.38.0
-        with:
-          sarif_file: gosec-viz.sarif
-          category: gosec-viz
-
-      # Direct Trivy install + CLI, not aquasecurity/trivy-action — that composite action
-      # transitively pins a setup-trivy tag that keeps breaking (v0.29.0 → setup-trivy@v0.2.2
-      # is unresolvable). Installing the binary directly removes all transitive action-tag risk.
-      # Installer script AND binary both pinned to an immutable release tag (not `main`) —
-      # closes the unpinned-remote-code-execution surface flagged in review. Bump the tag to
-      # upgrade, same as the @vN action pins elsewhere in this workflow.
+      # Installer script AND binary pinned to an immutable release tag, and the installer's checksum
+      # is verified before it runs: piping an unverified remote script into `sh` in a security job
+      # was the one unpinned-remote-code surface left in this workflow.
       - name: Install Trivy
-        run: curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/v0.72.0/contrib/install.sh | sh -s -- -b /usr/local/bin v0.72.0
-      - name: Trivy — dependency + config/CVE scan
+        env:
+          TRIVY_VERSION: v0.72.0
+          # sha256 of contrib/install.sh at that tag. Bump both together.
+          TRIVY_INSTALLER_SHA256: e00df553be558995b994758bc8995956554a16937f456dc6615b0cc411bfec7a
+        run: |
+          curl -sfL "https://raw.githubusercontent.com/aquasecurity/trivy/${TRIVY_VERSION}/contrib/install.sh" -o install-trivy.sh
+          echo "${TRIVY_INSTALLER_SHA256}  install-trivy.sh" | sha256sum -c -
+          sh install-trivy.sh -b /usr/local/bin "${TRIVY_VERSION}"
+      - name: Trivy — dependency + config/CVE scan (report-only)
         run: |
           trivy fs . \
             --scanners vuln,misconfig,secret \
@@ -375,9 +404,23 @@ jobs:
             --exit-code 0 \
             --format sarif \
             --output trivy.sarif
-          # report-only for now; flip --exit-code to 1 once findings are triaged
+      # SARIF upload needs a write token, which a fork PR does not get; skip the uploads there rather
+      # than fail the job for a reason unrelated to the diff.
+      - name: upload gosec (root)
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          sarif_file: gosec-root.sarif
+          category: gosec-root
+      - name: upload gosec (viz-gateway)
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          sarif_file: gosec-viz.sarif
+          category: gosec-viz
       - name: upload Trivy
-        uses: github/codeql-action/upload-sarif@v4.38.0
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         with:
           sarif_file: trivy.sarif
           category: trivy

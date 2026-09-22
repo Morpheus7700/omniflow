@@ -40,7 +40,7 @@ func (s *Store) InsertPurchaseOrder(
 
 	lines, err := json.Marshal(po.Lines)
 	if err != nil {
-		return false, fmt.Errorf("%w: marshal PO lines: %v", domain.ErrTerminal, err)
+		return false, fmt.Errorf("%w: marshal PO lines: %w", domain.ErrTerminal, err)
 	}
 
 	tag, err := ptx.tx.Exec(ctx, `

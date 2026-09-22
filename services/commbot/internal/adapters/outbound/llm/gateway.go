@@ -66,7 +66,7 @@ func (g *LiteLLMGateway) ClassifyIntent(ctx context.Context, secureSubjectURI, s
 
 	// Proactive rate limiting: block (honoring ctx) rather than flood the gateway and rack up spend.
 	if err := g.limiter.Wait(ctx); err != nil {
-		return domain.IntentUnspecified, fmt.Errorf("%w: rate limiter: %v", domain.ErrTransient, err)
+		return domain.IntentUnspecified, fmt.Errorf("%w: rate limiter: %w", domain.ErrTransient, err)
 	}
 	return g.callGateway(ctx, subject, body)
 }
@@ -74,15 +74,15 @@ func (g *LiteLLMGateway) ClassifyIntent(ctx context.Context, secureSubjectURI, s
 func (g *LiteLLMGateway) fetchAndSanitize(ctx context.Context, raw string) (string, error) {
 	if err := g.validateQuarantineURI(raw); err != nil {
 		// Attacker-controlled URI to a non-allowlisted host is terminal (never retry a hostile input).
-		return "", fmt.Errorf("%w: unsafe quarantine URI: %v", domain.ErrTerminal, err)
+		return "", fmt.Errorf("%w: unsafe quarantine URI: %w", domain.ErrTerminal, err)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
 	if err != nil {
-		return "", fmt.Errorf("%w: build request: %v", domain.ErrTerminal, err)
+		return "", fmt.Errorf("%w: build request: %w", domain.ErrTerminal, err)
 	}
 	resp, err := g.fetchClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("%w: fetch: %v", domain.ErrTransient, err)
+		return "", fmt.Errorf("%w: fetch: %w", domain.ErrTransient, err)
 	}
 	defer resp.Body.Close()
 
@@ -95,7 +95,7 @@ func (g *LiteLLMGateway) fetchAndSanitize(ctx context.Context, raw string) (stri
 
 	buf, err := io.ReadAll(io.LimitReader(resp.Body, maxFetchSize))
 	if err != nil {
-		return "", fmt.Errorf("%w: read body: %v", domain.ErrTransient, err)
+		return "", fmt.Errorf("%w: read body: %w", domain.ErrTransient, err)
 	}
 	return sanitize(string(buf)), nil
 }
@@ -169,19 +169,19 @@ func (g *LiteLLMGateway) callGateway(ctx context.Context, subject, body string) 
 		},
 	})
 	if err != nil {
-		return domain.IntentUnspecified, fmt.Errorf("%w: marshal: %v", domain.ErrTerminal, err)
+		return domain.IntentUnspecified, fmt.Errorf("%w: marshal: %w", domain.ErrTerminal, err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.baseURL+"/chat/completions", bytes.NewReader(reqBody))
 	if err != nil {
-		return domain.IntentUnspecified, fmt.Errorf("%w: build request: %v", domain.ErrTerminal, err)
+		return domain.IntentUnspecified, fmt.Errorf("%w: build request: %w", domain.ErrTerminal, err)
 	}
 	req.Header.Set("Authorization", "Bearer "+g.apiKey)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := g.llmClient.Do(req)
 	if err != nil {
-		return domain.IntentUnspecified, fmt.Errorf("%w: gateway call: %v", domain.ErrTransient, err)
+		return domain.IntentUnspecified, fmt.Errorf("%w: gateway call: %w", domain.ErrTransient, err)
 	}
 	defer resp.Body.Close()
 
@@ -196,7 +196,7 @@ func (g *LiteLLMGateway) callGateway(ctx context.Context, subject, body string) 
 
 	var out chatResponse
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxLLMRespSize)).Decode(&out); err != nil {
-		return domain.IntentUnspecified, fmt.Errorf("%w: decode response: %v", domain.ErrTransient, err)
+		return domain.IntentUnspecified, fmt.Errorf("%w: decode response: %w", domain.ErrTransient, err)
 	}
 	if len(out.Choices) == 0 {
 		return domain.IntentUnspecified, fmt.Errorf("%w: empty choices", domain.ErrTerminal)

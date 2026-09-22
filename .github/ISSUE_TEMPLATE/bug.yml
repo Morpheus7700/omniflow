@@ -1,0 +1,35 @@
+name: Bug report
+description: Something is wrong — a proof fails, a service misbehaves, a document lies.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: The command or proof script, and the commit or tag you ran it at.
+      placeholder: |
+        git rev-parse HEAD → …
+        bash scripts/failtest_killed_pod.sh
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: >
+        For a failed boot proof, attach the `proof-logs-*` workflow artifact or the file under
+        `.proof-logs/` — the full container logs, not the tail. For a service, the JSON log lines
+        around the failure with `workflow_id` / `event_id`.
+      render: text
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      placeholder: "Windows 11 / Docker Desktop 4.x / CI run URL"

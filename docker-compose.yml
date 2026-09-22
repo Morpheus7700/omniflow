@@ -1,10 +1,42 @@
+# The proof stack: everything scripts/*.sh boot in CI and on a developer machine. It is deliberately
+# insecure (CRDB --insecure, Kafka PLAINTEXT) and deliberately has NO restart policies — the
+# resume proofs `docker compose kill` a service and must see it stay dead until they restart it,
+# and a restart loop would hide the crash-on-boot failures docs/kb/05-gotchas.md catalogues.
+# Production knobs (TLS/SASL, restart policies, real hostnames) live in
+# docker-compose.override.example.yml — copy it to docker-compose.override.yml, which is gitignored.
+#
+# Every published port binds 127.0.0.1. The default 0.0.0.0 exposed a password-less database and a
+# plaintext broker to whatever network a laptop was on.
+
+name: omniflow
+
+networks:
+  omniflow:
+    driver: bridge
+
+x-service-defaults: &service-defaults
+  networks: [omniflow]
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
 services:
   cockroachdb:
+    <<: *service-defaults
     image: cockroachdb/cockroach:v26.2.5
-    command: start-single-node --insecure --accept-sql-without-tls
+    # Single node: changefeeds run license-free here (v24.3+); a multi-node cluster would need a key.
+    # --cache and --max-sql-memory are pinned so the node sizes itself to the limit below rather
+    # than to the host, which on a 16 GB runner would otherwise mean a 4 GB cache per proof.
+    command: start-single-node --insecure --accept-sql-without-tls --cache=256MiB --max-sql-memory=256MiB
+    deploy:
+      resources:
+        limits:
+          memory: 2g
     ports:
-      - "26257:26257"
-      - "8080:8080"
+      - "127.0.0.1:26257:26257"
+      - "127.0.0.1:8080:8080"
     healthcheck:
       test: ["CMD-SHELL", "cockroach sql --insecure -e 'SELECT 1'"]
       interval: 5s
@@ -15,10 +47,17 @@ services:
     # JVM image (not apache/kafka-native): the native GraalVM image ships no JRE, so the healthcheck's
     # kafka-broker-api-versions.sh (a Java-launching shell script) can't run — kafka would never report
     # healthy and every boot job would hang. The JVM image ships the same CLI scripts *with* a JRE.
+    <<: *service-defaults
     image: apache/kafka:4.3.1
     ports:
-      - "9092:9092"
+      - "127.0.0.1:9092:9092"
+    deploy:
+      resources:
+        limits:
+          memory: 1536m
     environment:
+      # Heap sized under the container limit; the JVM default (1 GB) plus off-heap would trip it.
+      KAFKA_HEAP_OPTS: "-Xmx768m -Xms256m"
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:29093,INTERNAL://0.0.0.0:29092
@@ -30,7 +69,11 @@ services:
       KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:29093
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # OFF, deliberately. franz-go never requests auto-creation so this was inert for every Go
+      # service anyway — but CockroachDB's Java changefeed sink DOES honour it, which meant a topic
+      # missing from kafka-init.sh would be silently created with broker defaults instead of failing.
+      # Every topic comes from infrastructure/init/kafka-init.sh; a missing one must fail loudly.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
       # Single-broker cluster: the internal __consumer_offsets / transaction-state topics default to
       # replication factor 3 and CANNOT be created on one broker, so consumer groups fail to find a
       # coordinator ("COORDINATOR_NOT_AVAILABLE") and no service ever consumes. Force RF=1.
@@ -54,6 +97,7 @@ services:
   # request auto-topic-creation, so KAFKA_AUTO_CREATE_TOPICS_ENABLE above is inert for our services
   # (it only ever worked for CockroachDB's Java changefeed sink). Full reasoning in the script.
   kafka-init:
+    <<: *service-defaults
     image: apache/kafka:4.3.1
     depends_on:
       kafka:
@@ -64,6 +108,7 @@ services:
     restart: "no"
 
   crdb-init:
+    <<: *service-defaults
     image: cockroachdb/cockroach:v26.2.5
     depends_on:
       cockroachdb:
@@ -86,17 +131,34 @@ services:
   # Deterministic LLM stand-in for the E2E `email` seed mode. Lets the LOCKED CommBot classification
   # path run without a real model or spend. Never part of the shipped system.
   mock-llm:
+    <<: *service-defaults
     build:
       context: .
       dockerfile: tools/mock-llm/Dockerfile
+    deploy:
+      resources:
+        limits:
+          memory: 128m
     environment:
       MOCK_LLM_ADDR: ":4000"
       MOCK_LLM_INTENT: "1"
+      HEALTH_PROBE_URL: "http://127.0.0.1:4000/healthz"
+    healthcheck:
+      test: ["CMD", "/mock-llm", "-probe"]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+      start_period: 5s
 
   commbot:
+    <<: *service-defaults
     build:
       context: .
       dockerfile: services/commbot/Dockerfile
+    deploy:
+      resources:
+        limits:
+          memory: 256m
     depends_on:
       crdb-init:
         condition: service_completed_successfully
@@ -120,9 +182,14 @@ services:
       start_period: 15s
 
   inventory-intelligence:
+    <<: *service-defaults
     build:
       context: .
       dockerfile: services/inventory-intelligence/Dockerfile
+    deploy:
+      resources:
+        limits:
+          memory: 256m
     depends_on:
       crdb-init:
         condition: service_completed_successfully
@@ -138,14 +205,19 @@ services:
       start_period: 15s
 
   p2p-orchestrator:
+    <<: *service-defaults
     build:
       context: .
       dockerfile: services/p2p-orchestrator/Dockerfile
+    deploy:
+      resources:
+        limits:
+          memory: 256m
     depends_on:
       crdb-init:
         condition: service_completed_successfully
       mock-llm:
-        condition: service_started
+        condition: service_healthy
     environment:
       CRDB_DSN: "postgres://root@cockroachdb:26257/omniflow?sslmode=disable"
       KAFKA_BROKERS: "kafka:29092"
@@ -170,6 +242,11 @@ services:
       start_period: 15s
 
   viz-gateway:
+    <<: *service-defaults
+    deploy:
+      resources:
+        limits:
+          memory: 256m
     build:
       # viz-gateway is its OWN Go module — context must be the module dir, not the repo root.
       # Its Dockerfile does `COPY go.mod go.sum` + `go build ./cmd` relative to that module.
@@ -188,6 +265,10 @@ services:
       # to. It replaced `Access-Control-Allow-Origin: *`. Set it explicitly here rather than relying
       # on the code default so that repointing the dashboard is a visible config change.
       VIZ_ALLOWED_ORIGINS: "http://localhost:3000"
+      # Bounds that were code defaults, made visible: the SSE client cap and the per-session
+      # statement timeout every DB call inherits (see internal/platform/crdbpool).
+      VIZ_MAX_SSE_CLIENTS: "100"
+      CRDB_STATEMENT_TIMEOUT: "30s"
     # See the commbot healthcheck for why this is CMD and not CMD-SHELL.
     healthcheck:
       test: ["CMD", "/svc", "-probe"]
@@ -196,9 +277,14 @@ services:
       retries: 12
       start_period: 15s
     ports:
-      - "8081:8080"
+      - "127.0.0.1:8081:8080"
 
   frontend:
+    <<: *service-defaults
+    deploy:
+      resources:
+        limits:
+          memory: 512m
     build:
       context: ./frontend
       dockerfile: Dockerfile
@@ -207,7 +293,15 @@ services:
         # 8081 is viz-gateway on the host (mapped 8081:8080); host 8080 is CockroachDB's admin UI.
         NEXT_PUBLIC_API_BASE: "http://localhost:8081"
     depends_on:
-      crdb-init:
-        condition: service_completed_successfully
+      viz-gateway:
+        condition: service_healthy
+    # The image declares the same HEALTHCHECK (busybox wget against its own listener); repeated here
+    # so the proofs can wait on it like every other service.
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:3000/"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"

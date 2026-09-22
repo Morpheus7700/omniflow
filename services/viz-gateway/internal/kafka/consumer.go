@@ -44,9 +44,10 @@ func (c *Consumer) Start(ctx context.Context) {
 		})
 
 		fetches.EachRecord(func(record *kgo.Record) {
-			if record.Topic == "omniflow.inventory.fact_inventory_movement" || record.Topic == "omniflow.inventory.fact_inventory_snapshot" {
+			switch record.Topic {
+			case "omniflow.inventory.fact_inventory_movement", "omniflow.inventory.fact_inventory_snapshot":
 				c.handleInventoryMovement(record)
-			} else if record.Topic == "omniflow.p2p.completed.v1" {
+			case "omniflow.p2p.completed.v1":
 				c.handleP2PCompleted(record)
 			}
 			// CommitRecords, not MarkCommitRecords: the latter is a no-op unless the client was

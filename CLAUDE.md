@@ -8,7 +8,8 @@ Claude is the lead engineer: it edits the code on disk, opens PRs, and audits it
 CI. (Earlier rounds used Antigravity as a separate builder with Claude auditing its output; that
 loop is retired, along with its builder prompts.)
 
-`master` is **branch-protected**: 9 required checks, `strict: true` (branches must be up to date
+`master` is **branch-protected**: every gating CI job is a required check (build, lint, frontend,
+govulncheck, integration, the six boot proofs, CodeQL), `strict: true` (branches must be up to date
 before merging), `enforce_admins: true`. There are no direct pushes to `master` — every change goes
 through a PR, including trivial ones. Approvals are not required, so a solo author can self-merge
 once the suite is green; requiring code-owner review would be self-blocking, since GitHub forbids
@@ -74,15 +75,26 @@ it"** — and a change no test objects to is either safe or a gap in the suite. 
 a solo repo would make every PR unmergeable.)
 
 ## Build / verify commands
-- Root module:  `CGO_ENABLED=0 go build ./...`  and  `go vet ./...`  (must be exit 0)
-- viz-gateway (separate module, go 1.25):  `cd services/viz-gateway && CGO_ENABLED=0 go build ./...`
-- Stack (CI only):  `docker compose up`  — runs license-free (single-node CRDB v24.3+ needs no key,
+`make help` lists everything; `make check` is CI's fast tier (gofmt, build, vet, `-race` tests,
+golangci-lint, shellcheck, frontend lint + typecheck). Spelled out:
+- Root module:  `CGO_ENABLED=0 go build ./...`, `go vet ./...`, `go test -race ./...` (must be exit 0)
+- viz-gateway (separate module):  `cd services/viz-gateway && CGO_ENABLED=0 go build ./...` etc.
+- Go toolchain: ONE pin — the `toolchain` directive in both `go.mod` files. CI reads it via
+  `go-version-file`; `go` auto-downloads it; the Dockerfiles pin the matching `golang` image by
+  digest. Bump all three together when govulncheck names a stdlib CVE.
+- Frontend: `cd frontend && npm run lint && npx tsc --noEmit && npm run build` — lint is a GATE, on
+  the ESLint 9 line (ESLint 10 cannot load eslint-config-next's react plugin; Dependabot ignores it).
+- Stack:  `docker compose up`  — runs license-free (single-node CRDB v24.3+ needs no key,
   changefeeds included). `CRDB_LICENSE`/`CRDB_ORG` are OPTIONAL env, only for a multi-node cluster;
   crdb-init + scripts + CI run without them and fail loudly if a key is ever actually required.
   Kafka image = the **JVM** `apache/kafka` image, never `kafka-native`: the GraalVM native image
   ships no JRE, so the `kafka-broker-api-versions.sh` healthcheck cannot run and the stack hangs
   waiting for a broker that never reports healthy. (Pinned version lives in `docker-compose.yml`;
-  Dependabot bumps it.)
+  Dependabot bumps it. CockroachDB follows the Regular release line — odd "Innovation" minors are
+  ignored in `dependabot.yml` on purpose.)
+- Boot proofs: `bash scripts/e2e.sh`, `bash scripts/failtest_*.sh` — all built on `scripts/lib.sh`
+  (boot, init gates, health waits, SQL polls, teardown, full logs to `.proof-logs/` on failure).
+  Never add a fixed `sleep` as synchronisation; use `wait_healthy` / `wait_sql` / `wait_state`.
 
 ## Runtime bounds — do not remove these without replacing them
 - **DB statements** are bounded by a session `statement_timeout` set in `internal/platform/crdbpool`
@@ -102,7 +114,8 @@ a solo repo would make every PR unmergeable.)
   `distroless/static:nonroot` and have no shell for a `curl` healthcheck to run in.
 
 ## Repo facts
-Two Go modules: root `omniflow` (go 1.25) + `services/viz-gateway` (go 1.25). Shared, non-domain
+Two Go modules: root `omniflow` + `services/viz-gateway` (both `go 1.25.0` minimum, same
+`toolchain` pin). Shared, non-domain
 helpers live under `internal/platform/` in the root module — `errclass` holds the one SQLSTATE
 taxonomy all three root-module services classify against. viz-gateway is a separate module and
 cannot import it.

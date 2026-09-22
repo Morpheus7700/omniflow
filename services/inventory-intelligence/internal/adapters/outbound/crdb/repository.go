@@ -32,9 +32,9 @@ func wrapError(err error) error {
 	}
 	switch errclass.Classify(err) {
 	case errclass.Transient:
-		return fmt.Errorf("%w: %v", domain.ErrTransient, err)
+		return fmt.Errorf("%w: %w", domain.ErrTransient, err)
 	case errclass.Terminal:
-		return fmt.Errorf("%w: %v", domain.ErrTerminal, err)
+		return fmt.Errorf("%w: %w", domain.ErrTerminal, err)
 	default:
 		return err
 	}

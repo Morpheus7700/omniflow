@@ -105,7 +105,7 @@ type chatResponse struct {
 func (a *PODrafter) Execute(ctx context.Context, req domain.NodeRequest) (*domain.NodeResult, error) {
 	var trigger commv1.VendorEmailReceived
 	if err := proto.Unmarshal(req.TriggerPayload, &trigger); err != nil {
-		return nil, fmt.Errorf("%w: trigger payload is not a VendorEmailReceived: %v", domain.ErrTerminal, err)
+		return nil, fmt.Errorf("%w: trigger payload is not a VendorEmailReceived: %w", domain.ErrTerminal, err)
 	}
 
 	prompt := buildPrompt(&trigger)
@@ -207,7 +207,7 @@ func (a *PODrafter) record(ctx context.Context, d aigov.Decision, attempt int) {
 func (a *PODrafter) parseAndBuild(raw string, req domain.NodeRequest, decisionID string) (*domain.PurchaseOrderEffect, error) {
 	var dr draftResponse
 	if err := json.Unmarshal([]byte(raw), &dr); err != nil {
-		return nil, fmt.Errorf("%w: model output is not valid JSON: %v", domain.ErrTerminal, err)
+		return nil, fmt.Errorf("%w: model output is not valid JSON: %w", domain.ErrTerminal, err)
 	}
 
 	po := &domain.PurchaseOrderEffect{
@@ -259,12 +259,12 @@ func (a *PODrafter) call(ctx context.Context, prompt string) (string, struct{ Pr
 		MaxTokens: a.maxToks,
 	})
 	if err != nil {
-		return "", usage, fmt.Errorf("%w: marshal request: %v", domain.ErrTerminal, err)
+		return "", usage, fmt.Errorf("%w: marshal request: %w", domain.ErrTerminal, err)
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return "", usage, fmt.Errorf("%w: build request: %v", domain.ErrTerminal, err)
+		return "", usage, fmt.Errorf("%w: build request: %w", domain.ErrTerminal, err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	if a.apiKey != "" {
@@ -274,13 +274,13 @@ func (a *PODrafter) call(ctx context.Context, prompt string) (string, struct{ Pr
 	resp, err := a.client.Do(httpReq)
 	if err != nil {
 		// Network-level failure: the call may succeed on a retry.
-		return "", usage, fmt.Errorf("%w: gateway call: %v", domain.ErrTransient, err)
+		return "", usage, fmt.Errorf("%w: gateway call: %w", domain.ErrTransient, err)
 	}
 	defer resp.Body.Close()
 
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
-		return "", usage, fmt.Errorf("%w: read response: %v", domain.ErrTransient, err)
+		return "", usage, fmt.Errorf("%w: read response: %w", domain.ErrTransient, err)
 	}
 
 	switch {
@@ -294,7 +294,7 @@ func (a *PODrafter) call(ctx context.Context, prompt string) (string, struct{ Pr
 
 	var cr chatResponse
 	if err := json.Unmarshal(raw, &cr); err != nil {
-		return "", usage, fmt.Errorf("%w: gateway response is not valid JSON: %v", domain.ErrTerminal, err)
+		return "", usage, fmt.Errorf("%w: gateway response is not valid JSON: %w", domain.ErrTerminal, err)
 	}
 	if len(cr.Choices) == 0 {
 		return "", usage, fmt.Errorf("%w: gateway returned no choices", domain.ErrTerminal)
@@ -339,7 +339,7 @@ func marshalEvent(po *domain.PurchaseOrderEffect, req domain.NodeRequest, d aigo
 	}
 	b, err := proto.Marshal(ev)
 	if err != nil {
-		return nil, fmt.Errorf("%w: marshal PurchaseOrderDrafted: %v", domain.ErrTerminal, err)
+		return nil, fmt.Errorf("%w: marshal PurchaseOrderDrafted: %w", domain.ErrTerminal, err)
 	}
 	return b, nil
 }
@@ -349,9 +349,9 @@ func marshalEvent(po *domain.PurchaseOrderEffect, req domain.NodeRequest, d aigo
 // retrying it would burn the consumer's retry budget to reach the identical answer.
 func classifyGovernanceError(err error) error {
 	if errors.Is(err, aigov.ErrRateLimited) {
-		return fmt.Errorf("%w: %v", domain.ErrTransient, err)
+		return fmt.Errorf("%w: %w", domain.ErrTransient, err)
 	}
-	return fmt.Errorf("%w: %v", domain.ErrTerminal, err)
+	return fmt.Errorf("%w: %w", domain.ErrTerminal, err)
 }
 
 func buildPrompt(t *commv1.VendorEmailReceived) string {

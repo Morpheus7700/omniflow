@@ -153,15 +153,15 @@ func (c *Consumer) deadLetter(ctx context.Context, record *kgo.Record, cause err
 func (c *Consumer) processRecord(ctx context.Context, record *kgo.Record) error {
 	var pb inventoryv1.InventoryMovementReceived
 	if err := proto.Unmarshal(record.Value, &pb); err != nil {
-		return fmt.Errorf("%w: deserialization poison pill: %v", domain.ErrTerminal, err)
+		return fmt.Errorf("%w: deserialization poison pill: %w", domain.ErrTerminal, err)
 	}
 	if err := c.validator.Validate(&pb); err != nil {
-		return fmt.Errorf("%w: protovalidate poison pill: %v", domain.ErrTerminal, err)
+		return fmt.Errorf("%w: protovalidate poison pill: %w", domain.ErrTerminal, err)
 	}
 
 	event, err := mapToDomain(&pb)
 	if err != nil {
-		return fmt.Errorf("%w: malformed event: %v", domain.ErrTerminal, err)
+		return fmt.Errorf("%w: malformed event: %w", domain.ErrTerminal, err)
 	}
 
 	if err := c.service.Process(ctx, *event); err != nil {

@@ -59,7 +59,7 @@ shopt -s nocasematch 2>/dev/null || true
 for pattern in "${PROTECTED_PATTERNS[@]}"; do
   # Using bash case with nocasematch for case-insensitive glob match.
   case "$BASENAME_LC" in
-    $pattern)
+    "$pattern")
       emit deny "Protected file: $BASENAME matches pattern '$pattern'"
       ;;
   esac

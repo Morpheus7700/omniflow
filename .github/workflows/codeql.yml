@@ -1,36 +1,58 @@
 name: CodeQL
 
 # GitHub's first-party SAST — free on public repos, results land in the Security tab.
-# Analyzes the root Go module (commbot, p2p-orchestrator, inventory-intelligence — the
-# security-critical services). viz-gateway is a separate module; add a second config block if
-# its projection layer later warrants deep analysis.
+# Two matrix legs: Go (both modules — viz-gateway has its own go.mod and was previously unscanned)
+# and the TypeScript frontend. Runs on every PR and weekly, so newly-disclosed patterns are caught
+# in code that has not changed.
 
 on:
   push:
     branches: [ master, main ]
   pull_request:
   schedule:
-    - cron: '0 6 * * 1'   # weekly, catches newly-disclosed CVE patterns in unchanged code
+    - cron: '0 6 * * 1'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   analyze:
-    name: analyze (go)
+    name: analyze (${{ matrix.language }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: go
+            build-mode: manual
+          - language: javascript-typescript
+            build-mode: none
     steps:
-      - uses: actions/checkout@v7
-      # Exact patch pin, kept in lockstep with the nine sites in e2e.yml — see the long note above
-      # `jobs:` there for why a floating `go-version` silently defeated the govulncheck gate.
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - if: matrix.language == 'go'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26.6'
-      - uses: github/codeql-action/init@v4.38.0
+          go-version-file: go.mod   # the `toolchain` directive is the single Go pin — see e2e.yml
+          cache-dependency-path: |
+            go.sum
+            services/viz-gateway/go.sum
+      - uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         with:
-          languages: go
-      - name: build (root module)
-        run: CGO_ENABLED=0 go build ./...
-      - uses: github/codeql-action/analyze@v4.38.0
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+      - if: matrix.language == 'go'
+        name: build (both modules)
+        run: |
+          CGO_ENABLED=0 go build ./...
+          ( cd services/viz-gateway && CGO_ENABLED=0 go build ./... )
+      - uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         with:
-          category: "/language:go"
+          category: "/language:${{ matrix.language }}"

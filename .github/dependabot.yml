@@ -1,15 +1,22 @@
 version: 2
 
-# Automated dependency surveillance. This repo carries three independent ecosystems and a container
-# base-image set, and a CVE in any of them is a finding an enterprise reviewer will ask about — so
-# each is tracked separately rather than relying on a periodic manual audit.
+# Automated dependency surveillance. This repo carries three code ecosystems, a container base-image
+# set, a compose-only runtime-image set, and GitHub Actions — a CVE in any of them is a finding an
+# enterprise reviewer will ask about, so each is tracked separately rather than by periodic audit.
+#
+# Two things Dependabot does NOT do, and the repo compensates for elsewhere:
+#   - it never touches a Go `toolchain` line or a `go-version:` value — the toolchain pin in go.mod
+#     is a manual obligation, triggered by govulncheck reporting a stdlib CVE;
+#   - a full `open-pull-requests-limit` does not queue, it ERRORS silently at /network/updates and
+#     drops the update — so the limits below are generous and the bumps are grouped, because a
+#     blackout looks exactly like "nothing to update".
 updates:
-  # Root Go module: commbot, p2p-orchestrator, inventory-intelligence, tools.
+  # Root Go module: commbot, p2p-orchestrator, inventory-intelligence, tools, internal/platform.
   - package-ecosystem: gomod
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 10
     commit-message:
       prefix: "deps(go)"
     groups:
@@ -22,7 +29,7 @@ updates:
     directory: /services/viz-gateway
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 10
     commit-message:
       prefix: "deps(viz)"
     groups:
@@ -33,32 +40,40 @@ updates:
     directory: /frontend
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 10
     commit-message:
       prefix: "deps(frontend)"
     groups:
       # Next.js and React must move together; splitting them produces PRs that cannot pass CI.
       next-react:
         patterns: ["next", "react", "react-dom", "eslint-config-next"]
+      # Type packages and tooling patches: routine.
+      frontend-patch:
+        update-types: [patch]
+        exclude-patterns: ["next", "react", "react-dom", "eslint-config-next"]
     ignore:
-      # TypeScript 7 is the native (Go) port and its emit breaks `next build` under Next 16.2.x:
+      # TypeScript 7 is the native (Go) port and its emit breaks `next build` under Next 16.x:
       #   "The \"id\" argument must be of type string. Received undefined"
-      #   → Next.js build worker exited with code: 1
-      # The frontend image is built by all four compose boot jobs, so a frontend build failure takes
-      # the ENTIRE E2E matrix down — this is not a frontend-only risk. Revisit when Next declares
-      # TS 7 support; until then re-opening this weekly is pure noise.
+      # The frontend image is built by every compose boot job, so a frontend build failure takes the
+      # ENTIRE E2E matrix down. Revisit when Next declares TS 7 support.
       - dependency-name: typescript
         versions: [">=7"]
+      # ESLint 10 removed the ESLint 9 context API that eslint-plugin-react (bundled by
+      # eslint-config-next) still uses, so under ESLint 10 `next lint` aborts before linting a single
+      # file. Lint is a GATE here, and a gate that cannot run is not a gate — the frontend stays on
+      # the 9.x line until eslint-plugin-react ships an ESLint 10 build. Check its peerDependencies.
+      # ACCEPTED RISK: npm reports 9.x as past its support window. ESLint is dev-time tooling with
+      # no runtime exposure, so a working, gated 9.x beats an unrunnable 10.x; revisit the moment
+      # `npm view eslint-plugin-react peerDependencies.eslint` includes ^10.
+      - dependency-name: eslint
+        versions: [">=10"]
 
-  # Dockerfile BUILD stages. There is NO Dockerfile at the repo root — every one lives one or two
-  # levels down, and `directory: /` made this ecosystem fail outright with "No Dockerfiles nor
-  # Kubernetes YAML found in /", so nothing here was ever actually surveilled. Each build context
-  # must be listed explicitly.
+  # Dockerfile base images, pinned by DIGEST (tag@sha256). There is NO Dockerfile at the repo root;
+  # every build context is listed explicitly, otherwise the ecosystem fails outright with "No
+  # Dockerfiles nor Kubernetes YAML found in /" and nothing is surveilled.
   #
-  # Realistic coverage is the `golang:*` and `node:*` builder stages. The runtime stage of all five
-  # Go images is `gcr.io/distroless/static:nonroot` — a floating, non-semver tag Dependabot cannot
-  # version-bump. Tracking distroless properly would require digest pinning; until then, do not
-  # claim it is covered.
+  # Digest pinning is what makes `gcr.io/distroless/static:nonroot` trackable at all — it is a
+  # floating, non-semver tag that Dependabot cannot version-bump, but it CAN bump a digest.
   - package-ecosystem: docker
     directories:
       - /frontend
@@ -70,27 +85,45 @@ updates:
       - /tools/seed
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 10
     commit-message:
       prefix: "deps(docker)"
+    groups:
+      # Six images share the same golang builder and the same distroless runtime. Bumping them as
+      # one PR is the only way to keep the images in lockstep and the CI toolchain equal to the
+      # builder; six separate PRs was how the queue filled up.
+      go-images:
+        patterns: ["golang", "gcr.io/distroless/static"]
 
   # RUNTIME images — the cockroachdb/cockroach and apache/kafka pins appear ONLY in
   # docker-compose.yml, never in a Dockerfile. `docker` and `docker-compose` are distinct Dependabot
-  # ecosystems and the former does not read compose files, so these two pins — the database and the
-  # broker, the most security-sensitive images in the stack — had zero surveillance while the config
-  # appeared to cover them. Dependabot config errors surface at /network/updates, never as a CI
-  # check, which is why that gap could sit unnoticed indefinitely.
+  # ecosystems and the former does not read compose files, so without this entry the database and
+  # the broker — the most security-sensitive images in the stack — have zero surveillance.
   - package-ecosystem: docker-compose
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 10
     commit-message:
       prefix: "deps(compose)"
+    ignore:
+      # CockroachDB alternates Regular releases (even minors: v26.2, v26.4 …) with optional
+      # Innovation releases (odd minors: v26.1, v26.3 …). Innovation releases are skippable by
+      # design, get a shorter support window, and are not what a production cluster tracks. The
+      # stack follows the Regular line; each odd minor is ignored explicitly because Dependabot
+      # has no "even minors only" rule. Extend this list when the next Regular release lands.
+      - dependency-name: cockroachdb/cockroach
+        versions: [">=26.3.0, <26.4.0", ">=26.5.0, <26.6.0", ">=27.1.0, <27.2.0", ">=27.3.0, <27.4.0"]
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    open-pull-requests-limit: 10
     commit-message:
       prefix: "deps(actions)"
+    groups:
+      # Actions are pinned by SHA; Dependabot rewrites `sha # vX.Y.Z` pairs. One PR per week for
+      # all of them is the right review unit.
+      actions:
+        patterns: ["*"]

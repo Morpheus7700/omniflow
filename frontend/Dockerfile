@@ -4,12 +4,12 @@
 # Node 24 is the Active LTS line. Node 26 is "Current" until it enters LTS (scheduled for late 2026),
 # and a production image tracks LTS, not Current. Pinned by digest for the same reason the Go images
 # are (see any services/*/Dockerfile): a tag is a moving pointer; a digest is a build input.
-FROM node:24-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1 AS deps
+FROM node:26-alpine@sha256:dbaa92e5758cbbcf85d65d5403fdb530fe3442cbe8c6dbfb7ef23365450d5070 AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci --no-audit --no-fund
 
-FROM node:24-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1 AS builder
+FROM node:26-alpine@sha256:dbaa92e5758cbbcf85d65d5403fdb530fe3442cbe8c6dbfb7ef23365450d5070 AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
@@ -23,7 +23,7 @@ ENV NEXT_PUBLIC_API_BASE=$NEXT_PUBLIC_API_BASE
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
-FROM node:24-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1 AS runner
+FROM node:26-alpine@sha256:dbaa92e5758cbbcf85d65d5403fdb530fe3442cbe8c6dbfb7ef23365450d5070 AS runner
 LABEL org.opencontainers.image.title="omniflow-frontend" \
       org.opencontainers.image.source="https://github.com/Morpheus7700/omniflow" \
       org.opencontainers.image.licenses="Apache-2.0"

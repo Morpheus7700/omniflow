@@ -1,27 +1,43 @@
 import { useEffect, useState, useRef } from 'react';
-import { useStore, P2PEvent } from '@/store';
-import { STREAM_URL, replayURL } from '@/lib/config';
+import { useStore, isValidEvent, type P2PEvent, type WatermarkEvent } from '@/store';
+import { STREAM_URL, replayURL, MAX_REPLAY_LIMIT } from '@/lib/config';
+
+/** Connection states the rail can render. */
+export type StreamStatus =
+  | 'connecting'
+  | 'connected'
+  /** The browser reconnected after a drop; the gateway replayed what was missed (Last-Event-ID). */
+  | 'reconnected'
+  | 'error'
+  | 'replay_finished'
+  /** A replay window failed: no stream is involved, so "disconnected" would be the wrong sentence. */
+  | 'replay_failed';
 
 /**
  * Fetch the replay endpoint and decode it, failing loudly and legibly.
  *
- * Two things here are deliberate, and both were bugs before:
- *
- * `res.ok` is checked BEFORE `.json()`. The gateway answers a non-200 with a text body, so parsing
- * it unconditionally turned "gateway returned 503" into an opaque `SyntaxError: Unexpected token`
- * pointing at the JSON parser — an error message that describes the symptom and hides the cause.
- *
- * The signal is threaded through so the caller's cleanup can cancel an in-flight request. Without
- * it a replay that is still in the air when the user hits "Return to live" lands AFTER the next
- * effect has already `clear()`ed the store, and writes the stale window back in — a race that
- * shows the wrong ledger and looks like a backend ordering fault rather than a client one.
+ * `res.ok` is checked BEFORE `.json()`. The gateway answers a non-200 with a JSON error body
+ * ({"error":{"code","message"}}); parsing it as the success shape would turn "gateway returned
+ * 503" into an opaque type error. The signal is threaded through so the caller's cleanup can
+ * cancel an in-flight request: a replay still in the air when the user hits "Return to live"
+ * would otherwise land AFTER the next effect has `clear()`ed the store and write the stale window
+ * back in.
  */
 async function fetchWindow(url: string, signal: AbortSignal): Promise<P2PEvent[]> {
   const res = await fetch(url, { signal });
   if (!res.ok) {
-    throw new Error(`viz-gateway returned ${res.status} ${res.statusText} for ${url}`);
+    let detail = `${res.status} ${res.statusText}`;
+    try {
+      const body = (await res.json()) as { error?: { code?: string; message?: string } };
+      if (body?.error?.message) detail = `${body.error.code ?? res.status}: ${body.error.message}`;
+    } catch {
+      // not JSON — the status line is all we have
+    }
+    throw new Error(`viz-gateway rejected ${url}: ${detail}`);
   }
-  return (await res.json()) as P2PEvent[];
+  const rows: unknown = await res.json();
+  if (!Array.isArray(rows)) throw new Error(`viz-gateway returned a non-array replay for ${url}`);
+  return rows.filter(isValidEvent);
 }
 
 /** An abort is this hook cancelling its own work during cleanup — expected, never an error. */
@@ -31,12 +47,8 @@ function isAbort(err: unknown): boolean {
 
 /**
  * A fetch rejection when the gateway is simply not running is an expected state in local
- * development — the frontend is presentation-only and the stack lives in Docker. Reporting it as
- * `console.error` promotes it into the Next dev error overlay, which reads as a crash in the app.
- * It is not: the UI already surfaces it as "Stream disconnected — figures below are stale".
- *
- * So a transport failure is a warning naming the origin and what to do about it, while anything
- * else — a real decode fault, an unexpected status — stays an error, because that IS a defect.
+ * development. Reporting it as `console.error` promotes it into the Next dev error overlay, which
+ * reads as a crash. It is not: the UI already surfaces it as a disconnected stream.
  */
 function report(context: string, err: unknown) {
   if (isAbort(err)) return;
@@ -50,24 +62,46 @@ function report(context: string, err: unknown) {
   console.error(`${context}:`, err);
 }
 
+/** Parse a frame's JSON without letting a malformed frame throw out of the event listener. */
+function parseFrame<T>(raw: string, guard: (x: unknown) => x is T): T | null {
+  try {
+    const v: unknown = JSON.parse(raw);
+    return guard(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+function isWatermark(x: unknown): x is WatermarkEvent {
+  return typeof x === 'object' && x !== null && typeof (x as WatermarkEvent).resolved_ts === 'string';
+}
+
+/** The integer part of an HLC resolved timestamp ("1790023750749228000.0000000000"). */
+function watermarkKey(resolvedTs: string): bigint | null {
+  const [intPart] = resolvedTs.split('.');
+  try {
+    return BigInt(intPart);
+  } catch {
+    return null;
+  }
+}
+
 export function useEventBuffer(replayFrom: bigint | null = null, replayTo: bigint | null = null) {
-  const addEvents = useStore(state => state.addEvents);
-  const setWatermark = useStore(state => state.setWatermark);
-  const clear = useStore(state => state.clear);
+  const addEvents = useStore((state) => state.addEvents);
+  const setWatermark = useStore((state) => state.setWatermark);
+  const clear = useStore((state) => state.clear);
   const bufferRef = useRef<P2PEvent[]>([]);
 
   // Identity of the subscription this hook currently describes. Changing either bound tears the
   // old stream down and opens a new one, so the reported status has to fall back to 'connecting'
   // at that same moment.
   const subscription = `${replayFrom ?? 'live'}:${replayTo ?? 'live'}`;
-  const [status, setStatus] = useState('connecting');
+  const [status, setStatus] = useState<StreamStatus>('connecting');
   const [subscribed, setSubscribed] = useState(subscription);
 
-  // React's documented "adjust state when a prop changes" pattern, and what
-  // react-hooks/set-state-in-effect is asking for. Resetting the status inside the effect instead
-  // schedules a second render pass, and the frame in between paints the PREVIOUS stream's status
-  // against the new window — a visible flash of 'connected' over a stream that no longer exists.
-  // Doing it during render means the two never disagree.
+  // React's documented "adjust state when a prop changes" pattern. Resetting the status inside the
+  // effect would schedule a second render pass, and the frame in between paints the PREVIOUS
+  // stream's status against the new window.
   if (subscribed !== subscription) {
     setSubscribed(subscription);
     setStatus('connecting');
@@ -78,7 +112,8 @@ export function useEventBuffer(replayFrom: bigint | null = null, replayTo: bigin
 
     let sseSource: EventSource | null = null;
     let isSnapshotLoaded = false;
-    let snapshotCursor = BigInt(0);
+    let snapshotCursor = 0n;
+    let opens = 0;
     // One controller per effect run. Cleanup aborts it, so every fetch below is bounded by the
     // lifetime of the effect that started it and cannot write into a later run's store.
     const controller = new AbortController();
@@ -87,45 +122,53 @@ export function useEventBuffer(replayFrom: bigint | null = null, replayTo: bigin
       sseSource = new EventSource(STREAM_URL);
 
       sseSource.addEventListener('movement', (e: MessageEvent) => {
-        const data = JSON.parse(e.data) as P2PEvent;
+        const data = parseFrame(e.data, isValidEvent);
+        if (!data) return; // a malformed frame is dropped, not thrown into React's render
         if (!isSnapshotLoaded) {
           bufferRef.current.push(data);
-        } else {
-          if (BigInt(data.sequence_engine_key) > snapshotCursor) {
-            addEvents([data]);
-          }
+        } else if (BigInt(data.sequence_engine_key) > snapshotCursor) {
+          addEvents([data]);
         }
       });
 
       sseSource.addEventListener('watermark', (e: MessageEvent) => {
-        const data = JSON.parse(e.data);
-        setWatermark(BigInt(data.resolved_ts));
+        const data = parseFrame(e.data, isWatermark);
+        const key = data ? watermarkKey(data.resolved_ts) : null;
+        if (key !== null) setWatermark(key); // the store keeps it monotonic
       });
 
       sseSource.onopen = async () => {
+        opens += 1;
+        if (opens > 1) {
+          // The browser reconnected on its own and sent Last-Event-ID; the gateway replayed the
+          // gap from the replay repository, and the store dedups any overlap. Nothing to refetch —
+          // but the reader should know a gap was crossed, not just that the dot went green again.
+          setStatus('reconnected');
+          return;
+        }
         setStatus('connected');
-        // Fetch historical snapshot up to current moment
+        // Subscribe-then-snapshot: the stream is open and buffering, so the snapshot's upper edge
+        // is the exact point after which buffered live events apply. No gap, no duplicate.
         try {
-          const history = await fetchWindow(replayURL(startCursor, 0), controller.signal);
-
-          if (history && history.length > 0) {
+          const history = await fetchWindow(
+            replayURL(startCursor, 0, MAX_REPLAY_LIMIT),
+            controller.signal,
+          );
+          if (history.length > 0) {
             snapshotCursor = BigInt(history[history.length - 1].sequence_engine_key);
             addEvents(history);
           } else {
             snapshotCursor = startCursor;
           }
-
-          // Process buffered live events
           const validBuffer = bufferRef.current.filter(
-            ev => BigInt(ev.sequence_engine_key) > snapshotCursor,
+            (ev) => BigInt(ev.sequence_engine_key) > snapshotCursor,
           );
-          if (validBuffer.length > 0) {
-            addEvents(validBuffer);
-          }
+          if (validBuffer.length > 0) addEvents(validBuffer);
           bufferRef.current = [];
           isSnapshotLoaded = true;
         } catch (err) {
           report('Failed to fetch snapshot', err);
+          if (!isAbort(err)) setStatus('error');
         }
       };
 
@@ -135,26 +178,22 @@ export function useEventBuffer(replayFrom: bigint | null = null, replayTo: bigin
     };
 
     if (replayFrom !== null && replayTo !== null) {
-      // Replay mode: Fetch history by range. Do not open SSE unless they rejoin live.
-      fetchWindow(replayURL(replayFrom, replayTo), controller.signal)
-        .then((history: P2PEvent[]) => {
-          if (history && history.length > 0) {
+      // Replay mode: fetch history by range. Do not open SSE unless they rejoin live.
+      fetchWindow(replayURL(replayFrom, replayTo, MAX_REPLAY_LIMIT), controller.signal)
+        .then((history) => {
+          if (history.length > 0) {
             addEvents(history);
+            // A replayed window is settled by definition: everything in it has been resolved.
             setWatermark(BigInt(history[history.length - 1].sequence_engine_key));
           }
           setStatus('replay_finished');
         })
-        .catch(err => {
+        .catch((err) => {
           report('Failed to fetch replay history', err);
-          // An abort means a newer effect run is already in charge; leaving the status alone keeps
-          // this one from stamping 'error' over the state its successor is establishing.
-          if (!isAbort(err)) setStatus('error');
+          if (!isAbort(err)) setStatus('replay_failed');
         });
     } else {
-      // initStream is async, so its rejection is a promise rejection, not a throw the effect body
-      // can see. Unhandled, it surfaces as an uncaught error attributed to this useEffect frame —
-      // which is what made the original failure so hard to place.
-      initStream(BigInt(0)).catch(err => {
+      initStream(0n).catch((err) => {
         report('Failed to open stream', err);
         if (!isAbort(err)) setStatus('error');
       });
@@ -163,6 +202,7 @@ export function useEventBuffer(replayFrom: bigint | null = null, replayTo: bigin
     return () => {
       controller.abort();
       if (sseSource) sseSource.close();
+      bufferRef.current = [];
     };
   }, [replayFrom, replayTo, addEvents, clear, setWatermark]);
 

@@ -18,6 +18,13 @@ import (
 type Consumer struct {
 	client *kgo.Client
 	broker *api.SSEBroker
+
+	// highWatermark is the largest resolved timestamp broadcast so far. Two changefeeds (p2p and
+	// inventory) each emit their own resolved messages, and the client keeps ONE settlement
+	// cursor — so if the inventory feed's watermark lagged the p2p feed's, the line on the ledger
+	// moved backwards and settled rows flipped to in-flight. The watermark is monotonic here so
+	// the client never sees it retreat.
+	highWatermark string
 }
 
 func NewConsumer(client *kgo.Client, broker *api.SSEBroker) *Consumer {
@@ -85,12 +92,7 @@ func (c *Consumer) handleInventoryMovement(record *kgo.Record) {
 
 	// 1. Check for watermark (CRDB native changefeed resolved timestamp)
 	if resolvedRaw, ok := payload["resolved"]; ok {
-		resolvedStr := extractString(resolvedRaw)
-		c.broker.Broadcast(api.SSEEvent{
-			ID:   resolvedStr,
-			Type: api.EventWatermark,
-			Data: map[string]string{"resolved_ts": resolvedStr},
-		})
+		c.emitWatermark(extractString(resolvedRaw))
 		return
 	}
 
@@ -140,12 +142,7 @@ func (c *Consumer) handleP2PCompleted(record *kgo.Record) {
 	// 1. Watermark (CRDB native changefeed resolved timestamp) — mirror the inventory path so the
 	// client keeps a single ordering signal across both streams.
 	if resolvedRaw, ok := payload["resolved"]; ok {
-		resolvedStr := extractString(resolvedRaw)
-		c.broker.Broadcast(api.SSEEvent{
-			ID:   resolvedStr,
-			Type: api.EventWatermark,
-			Data: map[string]string{"resolved_ts": resolvedStr},
-		})
+		c.emitWatermark(extractString(resolvedRaw))
 		return
 	}
 
@@ -207,4 +204,46 @@ func parseFloat(val interface{}) float64 {
 	default:
 		return 0
 	}
+}
+
+// emitWatermark broadcasts a resolved timestamp only if it advances the high watermark. Resolved
+// timestamps are HLC strings ("1790023750749228000.0000000000"); they compare correctly as
+// numbers, which for equal-length integer parts is the same as comparing the strings — and the
+// integer part is fixed-width nanoseconds for any timestamp this century.
+func (c *Consumer) emitWatermark(resolved string) {
+	if resolved == "" || !watermarkAdvances(c.highWatermark, resolved) {
+		return
+	}
+	c.highWatermark = resolved
+	c.broker.Broadcast(api.SSEEvent{
+		ID:   resolved,
+		Type: api.EventWatermark,
+		Data: api.Watermark{ResolvedTS: resolved},
+	})
+}
+
+// watermarkAdvances reports whether next > current, comparing the integer parts numerically and
+// the fractional parts lexically (they are fixed-width).
+func watermarkAdvances(current, next string) bool {
+	if current == "" {
+		return true
+	}
+	ci, cf := splitHLC(current)
+	ni, nf := splitHLC(next)
+	if len(ni) != len(ci) {
+		return len(ni) > len(ci)
+	}
+	if ni != ci {
+		return ni > ci
+	}
+	return nf > cf
+}
+
+func splitHLC(s string) (intPart, frac string) {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '.' {
+			return s[:i], s[i+1:]
+		}
+	}
+	return s, ""
 }

@@ -139,17 +139,15 @@ func (h *Handler) Ready(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, status, body)
 }
 
-// Register wires both probes, plus "/" for backward compatibility.
+// Register wires both probes, plus exactly "/" as a liveness alias for older callers.
 //
-// "/" is kept because it is what the Dockerfiles, compose, and any existing Cloud Run configuration
-// currently point at; removing it in the same change that adds the real probes would break the
-// deployment this change is meant to make trustworthy. It is aliased to LIVENESS, not readiness —
-// it has always returned 200 unconditionally, so liveness preserves its existing meaning exactly,
-// whereas aliasing it to readiness would silently change the behaviour of every existing caller.
+// The alias used to be the pattern "/", which in a ServeMux is a catch-all: every unknown path on
+// every service answered 200 {"status":"ok"} instead of 404, so a typo in a probe URL or a scanner
+// hitting /admin looked healthy. "/{$}" matches only the root itself.
 func (h *Handler) Register(mux *http.ServeMux) {
-	mux.HandleFunc("/healthz", h.Live)
-	mux.HandleFunc("/readyz", h.Ready)
-	mux.HandleFunc("/", h.Live)
+	mux.HandleFunc("GET /healthz", h.Live)
+	mux.HandleFunc("GET /readyz", h.Ready)
+	mux.HandleFunc("GET /{$}", h.Live)
 }
 
 func writeJSON(w http.ResponseWriter, code int, body map[string]any) {

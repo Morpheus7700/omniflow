@@ -49,7 +49,9 @@ func RepoRoot(t *testing.T) string {
 // the one that serves it.
 func CRDBImage(t *testing.T) string {
 	t.Helper()
-	composePath := filepath.Join(RepoRoot(t), "docker-compose.yml")
+	// Cleaned for gosec G304: the path is not caller input — it is the repo's own compose file,
+	// located by walking up from the test's working directory to the module root.
+	composePath := filepath.Clean(filepath.Join(RepoRoot(t), "docker-compose.yml"))
 	raw, err := os.ReadFile(composePath)
 	if err != nil {
 		t.Fatalf("read %s: %v", composePath, err)

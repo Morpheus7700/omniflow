@@ -18,8 +18,10 @@ source "$(dirname "$0")/lib.sh"
 
 boot_stack
 
+# Extra NAME=VALUE pairs arrive as arguments, so they go through `env`: a bare "$@" before the
+# command would make bash execute "SEED_INV_SEQ=200" as a program (exit 127).
 seed_inv() {
-    SEED_ACTION=inventory SEED_MODE=inventory "$@" go run ./tools/seed
+    env SEED_ACTION=inventory SEED_MODE=inventory "$@" go run ./tools/seed
 }
 
 # DECIMALs are compared numerically IN SQL (CRDB: 5.00 = 5.0000), never by CSV string — shopspring/

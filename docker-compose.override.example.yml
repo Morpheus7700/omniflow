@@ -1,0 +1,65 @@
+# Copy to docker-compose.override.yml (gitignored) to run the stack the way a deployment would.
+# The committed docker-compose.yml is the PROOF stack: plaintext, no restart policies, loopback
+# ports — deliberately (see its header). Everything a real environment changes goes here.
+#
+#   cp docker-compose.override.example.yml docker-compose.override.yml
+#   docker compose up -d
+services:
+  # Restart policies. Absent from the proof stack because the resume proofs `kill` a service and
+  # must see it stay dead; in a deployment a crashed consumer should come back.
+  commbot:
+    restart: unless-stopped
+    environment:
+      # A real gateway instead of mock-llm, with its key from the environment, never from a file.
+      LITELLM_URL: ${LITELLM_URL}
+      LITELLM_KEY: ${LITELLM_KEY}
+      # Kafka over TLS + SCRAM. The same five variables work for every service and the seeder.
+      KAFKA_TLS: "true"
+      KAFKA_TLS_CA: /run/secrets/kafka-ca.pem
+      KAFKA_SASL_MECHANISM: SCRAM-SHA-512
+      KAFKA_SASL_USERNAME: ${KAFKA_SASL_USERNAME}
+      KAFKA_SASL_PASSWORD: ${KAFKA_SASL_PASSWORD}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      LOG_LEVEL: info
+    volumes:
+      - ./secrets/kafka-ca.pem:/run/secrets/kafka-ca.pem:ro
+  inventory-intelligence:
+    restart: unless-stopped
+    environment:
+      KAFKA_TLS: "true"
+      KAFKA_TLS_CA: /run/secrets/kafka-ca.pem
+      KAFKA_SASL_MECHANISM: SCRAM-SHA-512
+      KAFKA_SASL_USERNAME: ${KAFKA_SASL_USERNAME}
+      KAFKA_SASL_PASSWORD: ${KAFKA_SASL_PASSWORD}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+    volumes:
+      - ./secrets/kafka-ca.pem:/run/secrets/kafka-ca.pem:ro
+  p2p-orchestrator:
+    restart: unless-stopped
+    environment:
+      LITELLM_URL: ${LITELLM_URL}
+      LITELLM_KEY: ${LITELLM_KEY}
+      KAFKA_TLS: "true"
+      KAFKA_TLS_CA: /run/secrets/kafka-ca.pem
+      KAFKA_SASL_MECHANISM: SCRAM-SHA-512
+      KAFKA_SASL_USERNAME: ${KAFKA_SASL_USERNAME}
+      KAFKA_SASL_PASSWORD: ${KAFKA_SASL_PASSWORD}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      HITL_LEASE_TTL: 48h
+    volumes:
+      - ./secrets/kafka-ca.pem:/run/secrets/kafka-ca.pem:ro
+  viz-gateway:
+    restart: unless-stopped
+    environment:
+      KAFKA_TLS: "true"
+      KAFKA_TLS_CA: /run/secrets/kafka-ca.pem
+      KAFKA_SASL_MECHANISM: SCRAM-SHA-512
+      KAFKA_SASL_USERNAME: ${KAFKA_SASL_USERNAME}
+      KAFKA_SASL_PASSWORD: ${KAFKA_SASL_PASSWORD}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      # The dashboard's real origin; the gateway refuses browsers from anywhere else.
+      VIZ_ALLOWED_ORIGINS: https://dashboard.example.com
+    volumes:
+      - ./secrets/kafka-ca.pem:/run/secrets/kafka-ca.pem:ro
+  frontend:
+    restart: unless-stopped

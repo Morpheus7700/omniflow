@@ -10,12 +10,13 @@ import (
 
 	"omniflow/internal/platform/crdbpool"
 	"omniflow/internal/platform/health"
+	"omniflow/internal/platform/kafkaconf"
+	"omniflow/internal/platform/telemetry"
 	"omniflow/services/inventory-intelligence/internal/adapters/inbound/kafka"
 	"omniflow/services/inventory-intelligence/internal/adapters/outbound/crdb"
 	"omniflow/services/inventory-intelligence/internal/core/domain"
 
 	"github.com/twmb/franz-go/pkg/kgo"
-	"strings"
 	"time"
 )
 
@@ -29,10 +30,26 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
+	// Logging + tracing + metrics. This service had no tracer provider at all: the TraceParent it
+	// carries on every movement went nowhere.
+	shutdownTelemetry, err := telemetry.Init(ctx, "inventory-intelligence")
+	if err != nil {
+		slog.Error("telemetry init", "error", err)
+		os.Exit(1)
+	}
+	defer func() {
+		if err := shutdownTelemetry(context.Background()); err != nil {
+			slog.Error("telemetry shutdown", "error", err)
+		}
+	}()
+
 	// 1. Setup Database
 	dbURL := os.Getenv("CRDB_DSN")
 	if dbURL == "" {
-		dbURL = "postgres://root@localhost:26257/omniflow?sslmode=disable"
+		// No localhost default: inside a container it points at nothing, and the service would
+		// report itself healthy against a database it cannot reach.
+		slog.Error("CRDB_DSN is not set")
+		os.Exit(1)
 	}
 	// crdbpool, not pgxpool.New: it applies a statement_timeout so no query can hang forever.
 	dbpool, err := crdbpool.New(ctx, dbURL)
@@ -48,16 +65,18 @@ func main() {
 	svc := domain.NewValuationService(repo)
 
 	// 3. Setup Kafka Consumer
-	kafkaBrokers := os.Getenv("KAFKA_BROKERS")
-	if kafkaBrokers == "" {
-		kafkaBrokers = "localhost:9092"
+	// Transport (brokers, TLS, SASL) comes from the environment via kafkaconf; the consumer
+	// contract — manual commit — is fixed here and must stay.
+	kopts, err := kafkaconf.FromEnv()
+	if err != nil {
+		slog.Error("kafka config", "error", err)
+		os.Exit(1)
 	}
-	client, err := kgo.NewClient(
-		kgo.SeedBrokers(strings.Split(kafkaBrokers, ",")...),
+	client, err := kgo.NewClient(append(kopts,
 		kgo.ConsumerGroup("inventory-intelligence-v1"),
 		kgo.ConsumeTopics("omniflow.inventory.movement.v1"),
 		kgo.DisableAutoCommit(), // We commit manually after processing
-	)
+	)...)
 	if err != nil {
 		slog.Error("failed to create kafka client", "error", err)
 		os.Exit(1)
@@ -80,10 +99,15 @@ func main() {
 	probes := health.New(health.DBCheck("crdb", dbpool))
 	mux := http.NewServeMux()
 	probes.Register(mux)
+	mux.Handle("/metrics", telemetry.MetricsHandler())
 	srv := &http.Server{
 		Addr:              ":8080",
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    64 << 10,
+		WriteTimeout:      15 * time.Second,
 	}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {

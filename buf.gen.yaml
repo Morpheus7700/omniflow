@@ -6,3 +6,9 @@ plugins:
   - local: protoc-gen-go
     out: .
     opt: module=omniflow
+# Only the project module is an input. buf.yaml also declares third_party/proto (the vendored
+# buf/validate/validate.proto) so imports resolve, but a bare `buf generate` used to try to emit
+# that file too and fail with 'generated file does not match prefix "omniflow"'. This keeps the
+# documented `buf generate` working as written.
+inputs:
+  - directory: contracts/proto

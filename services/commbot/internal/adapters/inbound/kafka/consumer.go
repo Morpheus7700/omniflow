@@ -9,6 +9,8 @@ import (
 
 	communicationv1 "omniflow/contracts/communication/v1"
 	"omniflow/internal/platform/delivery"
+	"omniflow/internal/platform/metrics"
+	"omniflow/internal/platform/retry"
 	"omniflow/services/commbot/internal/core/domain"
 
 	"buf.build/go/protovalidate"
@@ -21,10 +23,8 @@ import (
 
 const (
 	dlqTopic          = "omniflow.communication.v1.dlq"
-	maxTransientRetry = 5
 	pollTimeoutMs     = 250
 	dlqFlushTimeoutMs = 5000
-	initialBackoff    = 200 * time.Millisecond
 )
 
 // IdempotencyStore enforces exactly-once *effects* on an at-least-once stream.
@@ -41,7 +41,10 @@ type Consumer struct {
 	idempotency IdempotencyStore
 	propagator  propagation.TextMapPropagator
 	tracer      trace.Tracer
+	retry       retry.Policy
 }
+
+const serviceName = "commbot"
 
 // NewConsumer REQUIRES a client created with `kgo.DisableAutoCommit()`.
 // Auto-commit acknowledges offsets on poll regardless of processing outcome, which
@@ -67,6 +70,7 @@ func NewConsumer(
 		return nil, fmt.Errorf("init protovalidate: %w", err)
 	}
 	return &Consumer{
+		retry:       retry.FromEnv(),
 		client:      client,
 		service:     svc,
 		validator:   v,
@@ -123,29 +127,32 @@ func (c *Consumer) processMessage(ctx context.Context, msg *kgo.Record) {
 	// Bounded, backed-off retry of the SAME message. Blocking here preserves per-partition
 	// ordering; we never advance the commit past an unresolved offset (offsets are a
 	// high-water mark — committing N+1 acknowledges N).
-	backoff := initialBackoff
 	var procErr error
-	for attempt := 1; attempt <= maxTransientRetry; attempt++ {
+	for attempt := 1; attempt <= c.retry.MaxAttempts; attempt++ {
 		procErr = c.handle(ctx, email)
 		switch {
 		case procErr == nil:
 			c.commit(ctx, msg)
+			metrics.ConsumerRecords.WithLabelValues(serviceName, msg.Topic, metrics.OutcomeOK).Inc()
 			return
 		case errors.Is(procErr, errAlreadyProcessed):
 			span.AddEvent("duplicate event; committing without reprocessing")
 			c.commit(ctx, msg)
+			metrics.ConsumerRecords.WithLabelValues(serviceName, msg.Topic, metrics.OutcomeSkipped).Inc()
 			return
 		case errors.Is(procErr, domain.ErrInvalidQuarantineURI), errors.Is(procErr, domain.ErrTerminal):
 			c.deadLetter(ctx, msg, fmt.Errorf("terminal processing error: %w", procErr))
 			return
 		case errors.Is(procErr, domain.ErrTransient):
-			span.AddEvent(fmt.Sprintf("transient failure %d/%d: %v", attempt, maxTransientRetry, procErr))
+			span.AddEvent(fmt.Sprintf("transient failure %d/%d: %v", attempt, c.retry.MaxAttempts, procErr))
+			slog.Warn("transient error, retrying in place", "error", procErr, "attempt", attempt,
+				"max_attempts", c.retry.MaxAttempts, "topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset)
+			metrics.ConsumerRetries.WithLabelValues(serviceName, msg.Topic).Inc()
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(backoff):
+			case <-time.After(c.retry.Backoff(attempt)):
 			}
-			backoff *= 2
 		default:
 			// Unclassified: fail closed to terminal to avoid an infinite poison loop.
 			c.deadLetter(ctx, msg, fmt.Errorf("unclassified error (defaulting terminal): %w", procErr))
@@ -175,12 +182,22 @@ func (c *Consumer) handle(ctx context.Context, email *domain.VendorEmail) error 
 // deadLetter publishes to the DLQ and commits the source offset ONLY after delivery is
 // confirmed. A failed produce + committed offset = permanent data loss.
 func (c *Consumer) deadLetter(ctx context.Context, msg *kgo.Record, cause error) {
-	slog.Error("routing to DLQ", "error", cause, "partition", msg.Partition)
+	slog.Error("routing to DLQ", "error", cause,
+		"topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset)
+	// Copied, never appended in place: msg.Headers aliases franz-go's backing array, and an
+	// in-place append can overwrite a header of the next record in the batch. The header keys
+	// match the other two consumers so one re-drive tool reads all three DLQs.
+	headers := make([]kgo.RecordHeader, 0, len(msg.Headers)+2)
+	headers = append(headers, msg.Headers...)
+	headers = append(headers,
+		kgo.RecordHeader{Key: "error_reason", Value: []byte(cause.Error())},
+		kgo.RecordHeader{Key: "source_topic", Value: []byte(msg.Topic)},
+	)
 	dlqRecord := &kgo.Record{
 		Topic:   dlqTopic,
 		Key:     msg.Key,
 		Value:   msg.Value,
-		Headers: append(msg.Headers, kgo.RecordHeader{Key: "error_reason", Value: []byte(cause.Error())}),
+		Headers: headers,
 	}
 	// Bounded, and deliberately not cancelled by the parent: this is the DLQ half of the
 	// confirmed-DLQ-before-commit contract. See internal/platform/delivery.
@@ -191,6 +208,7 @@ func (c *Consumer) deadLetter(ctx context.Context, msg *kgo.Record, cause error)
 		return
 	}
 	c.commit(ctx, msg)
+	metrics.ConsumerRecords.WithLabelValues(serviceName, msg.Topic, metrics.OutcomeDLQ).Inc()
 }
 
 func (c *Consumer) commit(ctx context.Context, msg *kgo.Record) {

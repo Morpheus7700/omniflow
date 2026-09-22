@@ -2,10 +2,14 @@ package core
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
 	v1 "omniflow/contracts/communication/v1"
+	"omniflow/internal/platform/metrics"
 	"omniflow/services/p2p-orchestrator/internal/core/domain"
 	"omniflow/services/p2p-orchestrator/internal/core/ports"
 
@@ -15,10 +19,31 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// Config is the operational shape of the orchestrator — who this pod is and how long a workflow
+// may wait at the human gate. Both used to be literals in the code path.
+type Config struct {
+	// OwnerPod identifies this process on the workflow row while it is parked at the human gate.
+	// A literal "orchestrator-pod-local" told an operator nothing; the hostname tells them which
+	// replica parked it.
+	OwnerPod string
+	// HITLLeaseTTL is how long a workflow may sit SUSPENDED awaiting approval before the sweep
+	// fails it. A workflow that waits forever is a purchase order nobody will ever see again.
+	HITLLeaseTTL time.Duration
+}
+
+// DefaultHITLLeaseTTL is the approval window when none is configured.
+const DefaultHITLLeaseTTL = 24 * time.Hour
+
+// failedLedgerNode is the node_execution_ledger key under which a workflow's failure is recorded.
+// It shares the ledger's uniqueness with real nodes, so the WorkflowFailed outbox event is
+// emitted exactly once no matter how many consumers or sweeps observe the same failure.
+const failedLedgerNode = "__failed"
+
 type OrchestratorService struct {
 	store  ports.Checkpointer
 	tracer trace.Tracer
 	dag    *domain.DAG
+	cfg    Config
 
 	// executors maps a node id to the thing that does its work. A node with no entry is a
 	// pass-through checkpoint, which is what lets a partially implemented DAG still run end to end.
@@ -26,16 +51,43 @@ type OrchestratorService struct {
 	executors map[string]ports.NodeExecutor
 }
 
-func NewOrchestratorService(s ports.Checkpointer, d *domain.DAG, executors map[string]ports.NodeExecutor) *OrchestratorService {
+func NewOrchestratorService(s ports.Checkpointer, d *domain.DAG, executors map[string]ports.NodeExecutor, cfg Config) *OrchestratorService {
 	if executors == nil {
 		executors = map[string]ports.NodeExecutor{}
+	}
+	if cfg.OwnerPod == "" {
+		cfg.OwnerPod = "orchestrator"
+	}
+	if cfg.HITLLeaseTTL <= 0 {
+		cfg.HITLLeaseTTL = DefaultHITLLeaseTTL
 	}
 	return &OrchestratorService{
 		store:     s,
 		tracer:    otel.Tracer("p2p-orchestrator"),
 		dag:       d,
+		cfg:       cfg,
 		executors: executors,
 	}
+}
+
+// approvalPayload is the outbox event a human approval emits. It carries the audit facts the
+// approval message brought with it: WHO approved, and the trace of the approval itself (distinct
+// from the workflow's originating trace). Marshalled, never concatenated — approved_by is
+// external input and a quote in it must not be able to change the event's shape.
+type approvalPayload struct {
+	Status              string `json:"status"`
+	Node                string `json:"node"`
+	ApprovedBy          string `json:"approved_by"`
+	ApprovalTraceParent string `json:"approval_trace_parent,omitempty"`
+	ApprovedAt          string `json:"approved_at"`
+}
+
+// failurePayload is the WorkflowFailed outbox event.
+type failurePayload struct {
+	Status   string `json:"status"`
+	Node     string `json:"node,omitempty"`
+	Reason   string `json:"reason"`
+	FailedAt string `json:"failed_at"`
 }
 
 // executeNode runs a node's executor, if it has one. Nodes without an executor return nil, which
@@ -148,9 +200,18 @@ func (s *OrchestratorService) handleApproval(ctx context.Context, payload []byte
 	wf.OwnerPod = "" // Release the human-in-the-loop durable lease
 	wf.LeaseExpiresAt = time.Time{}
 
-	outboxPayload := []byte(`{"status":"approved","node":"` + nodeID + `"}`)
+	outboxPayload, err := json.Marshal(approvalPayload{
+		Status:              "approved",
+		Node:                nodeID,
+		ApprovedBy:          event.ApprovedBy,
+		ApprovalTraceParent: event.TraceParent,
+		ApprovedAt:          time.Now().UTC().Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		return fmt.Errorf("%w: marshal approval payload: %w", domain.ErrTerminal, err)
+	}
 
-	if err := s.store.SaveCheckpoint(ctx, tx, wf, nodeID, attempt, outboxPayload); err != nil {
+	if err := s.store.SaveCheckpointTyped(ctx, tx, wf, nodeID, attempt, "HumanApproved", outboxPayload); err != nil {
 		return err
 	}
 
@@ -195,6 +256,7 @@ func (s *OrchestratorService) drainWorkflow(ctx context.Context, wf *domain.Work
 				log.Error("commit failed while completing", "error", err)
 				return err
 			}
+			metrics.WorkflowTransitions.WithLabelValues(string(domain.StateCompleted)).Inc()
 			log.Info("workflow completed", "nodes_executed", wf.CurrentNodeIndex)
 			return nil
 		}
@@ -236,8 +298,8 @@ func (s *OrchestratorService) drainWorkflow(ctx context.Context, wf *domain.Work
 
 		if nodeID == "human_approval" {
 			wf.State = domain.StateSuspended
-			wf.OwnerPod = "orchestrator-pod-local"
-			wf.LeaseExpiresAt = time.Now().Add(24 * time.Hour)
+			wf.OwnerPod = s.cfg.OwnerPod
+			wf.LeaseExpiresAt = time.Now().Add(s.cfg.HITLLeaseTTL)
 
 			if err := s.store.SaveCheckpoint(ctx, tx, wf, "", 0, nil); err != nil {
 				if rbErr := tx.Rollback(ctx); rbErr != nil {
@@ -250,6 +312,7 @@ func (s *OrchestratorService) drainWorkflow(ctx context.Context, wf *domain.Work
 				log.Error("commit failed while suspending", "error", err)
 				return err
 			}
+			metrics.WorkflowTransitions.WithLabelValues(string(domain.StateSuspended)).Inc()
 			log.Info("suspended awaiting human approval", "lease_expires_at", wf.LeaseExpiresAt)
 			return nil
 		}
@@ -345,4 +408,96 @@ func (s *OrchestratorService) drainWorkflow(ctx context.Context, wf *domain.Work
 		}
 		log.Info("node completed", "node", nodeID, "attempt", attempt, "node_index", wf.CurrentNodeIndex)
 	}
+}
+
+// FailWorkflow moves the workflow identified by eventID to FAILED and emits one WorkflowFailed
+// outbox event, exactly once. It is the consumer's last act before dead-lettering a record and
+// the sweep's verdict on an approval that never came.
+//
+// Before this existed a terminal node error left the row RUNNING forever: the DLQ record was the
+// only evidence, and nothing downstream — not the dashboard, not a replay — could tell a failed
+// workflow from a slow one. StateFailed was defined, checked in drainWorkflow, and never assigned.
+//
+// Already-terminal workflows are left alone (a duplicate dead-letter or a sweep racing a late
+// approval must not flip COMPLETED to FAILED). Lease contention is returned as transient so the
+// caller — a sweep tick or a consumer about to dead-letter anyway — simply tries later.
+func (s *OrchestratorService) FailWorkflow(ctx context.Context, eventID, nodeID, reason string) error {
+	ctx, span := s.tracer.Start(ctx, "FailWorkflow")
+	defer span.End()
+
+	wf, err := s.store.LoadWorkflowByEventID(ctx, eventID)
+	if err != nil {
+		return err
+	}
+	log := slog.With("workflow_id", wf.ID, "event_id", wf.EventID, "seq_key", wf.SequenceEngineKey)
+
+	tx, err := s.store.AcquireLease(ctx, wf.ID)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	// Re-read under the lock: the pool read above may predate a concurrent completion.
+	wf, err = s.store.LoadWorkflowByEventIDTx(ctx, tx, eventID)
+	if err != nil {
+		return err
+	}
+	if wf.State == domain.StateCompleted || wf.State == domain.StateFailed {
+		log.Info("fail requested on a terminal workflow, ignored", "state", wf.State, "reason", reason)
+		return nil
+	}
+
+	wf.State = domain.StateFailed
+	wf.OwnerPod = ""
+	wf.LeaseExpiresAt = time.Time{}
+
+	payload, err := json.Marshal(failurePayload{
+		Status:   "failed",
+		Node:     nodeID,
+		Reason:   reason,
+		FailedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		return fmt.Errorf("%w: marshal failure payload: %w", domain.ErrTerminal, err)
+	}
+	if err := s.store.SaveCheckpointTyped(ctx, tx, wf, failedLedgerNode, 1, "WorkflowFailed", payload); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	metrics.WorkflowTransitions.WithLabelValues(string(domain.StateFailed)).Inc()
+	log.Error("workflow failed", "node", nodeID, "reason", reason)
+	return nil
+}
+
+// ReapExpiredApprovals fails every workflow that has sat SUSPENDED past its HITL lease. Called on
+// a timer from main; safe to run on every replica concurrently, because FailWorkflow takes the
+// row lock NOWAIT and a loser simply skips the row until the next tick.
+//
+// Returns the number of workflows it failed. Errors on individual workflows are logged and do not
+// stop the sweep — one contended row must not shield the rest.
+func (s *OrchestratorService) ReapExpiredApprovals(ctx context.Context, limit int) (int, error) {
+	ctx, span := s.tracer.Start(ctx, "ReapExpiredApprovals")
+	defer span.End()
+
+	expired, err := s.store.ListExpiredSuspended(ctx, time.Now(), limit)
+	if err != nil {
+		return 0, err
+	}
+	failed := 0
+	for _, eventID := range expired {
+		reason := fmt.Sprintf("human approval not received within %s", s.cfg.HITLLeaseTTL)
+		if err := s.FailWorkflow(ctx, eventID, "human_approval", reason); err != nil {
+			if errors.Is(err, domain.ErrTransient) {
+				slog.Info("expired approval skipped this sweep", "event_id", eventID, "error", err)
+			} else {
+				slog.Error("failing expired approval", "event_id", eventID, "error", err)
+			}
+			continue
+		}
+		failed++
+		metrics.ApprovalsExpired.Inc()
+	}
+	return failed, nil
 }

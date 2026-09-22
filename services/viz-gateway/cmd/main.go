@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -14,7 +16,9 @@ import (
 	"omniflow/services/viz-gateway/internal/crdbpool"
 	"omniflow/services/viz-gateway/internal/health"
 	"omniflow/services/viz-gateway/internal/kafka"
+	"omniflow/services/viz-gateway/internal/kafkaconf"
 	"omniflow/services/viz-gateway/internal/repository"
+	"omniflow/services/viz-gateway/internal/telemetry"
 
 	"github.com/twmb/franz-go/pkg/kgo"
 )
@@ -29,10 +33,29 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Logging + tracing + metrics, same contract as the root-module services.
+	shutdownTelemetry, err := telemetry.Init(ctx, "viz-gateway")
+	if err != nil {
+		slog.Error("telemetry init", "error", err)
+		os.Exit(1)
+	}
+	defer func() {
+		if err := shutdownTelemetry(context.Background()); err != nil {
+			slog.Error("telemetry shutdown", "error", err)
+		}
+	}()
+
 	// 1. Setup Postgres (for replay)
-	dbURL := os.Getenv("DATABASE_URL")
+	// CRDB_DSN is the contract every service shares; DATABASE_URL is honoured as the deprecated
+	// alias this service used to read. No localhost default: a gateway that silently points at
+	// nothing reports itself healthy and serves an empty replay.
+	dbURL := os.Getenv("CRDB_DSN")
 	if dbURL == "" {
-		dbURL = "postgres://root@localhost:26257/omniflow?sslmode=disable"
+		dbURL = os.Getenv("DATABASE_URL")
+	}
+	if dbURL == "" {
+		slog.Error("CRDB_DSN is not set")
+		os.Exit(1)
 	}
 	// crdbpool, not pgxpool.New: it applies a statement_timeout so no query can hang forever.
 	db, err := crdbpool.New(ctx, dbURL)
@@ -48,15 +71,14 @@ func main() {
 	go sseBroker.Run(ctx)
 
 	// 3. Setup Kafka Consumer
-	kafkaBrokers := []string{"localhost:9092"}
-	if envBrokers := os.Getenv("KAFKA_BROKERS"); envBrokers != "" {
-		// Split on comma like every other service. Without this a multi-broker KAFKA_BROKERS
-		// value becomes one malformed seed address, so the gateway can only ever reach a
-		// single-broker cluster.
-		kafkaBrokers = strings.Split(envBrokers, ",")
+	// Transport (brokers, TLS, SASL) comes from the environment via kafkaconf, the same contract
+	// as the root-module services.
+	kopts, err := kafkaconf.FromEnv()
+	if err != nil {
+		slog.Error("kafka config", "error", err)
+		os.Exit(1)
 	}
-	cl, err := kgo.NewClient(
-		kgo.SeedBrokers(kafkaBrokers...),
+	cl, err := kgo.NewClient(append(kopts,
 		kgo.ConsumerGroup("viz-gateway"),
 		kgo.ConsumeTopics("omniflow.p2p.completed.v1", "omniflow.inventory.fact_inventory_movement", "omniflow.inventory.fact_inventory_snapshot"),
 		// Manual commit, matching the other three consumers. This option was previously absent,
@@ -66,7 +88,7 @@ func main() {
 		// built with AutoCommitMarks). CLAUDE.md names the manual-commit contract load-bearing,
 		// so this service was violating it by omission rather than by decision.
 		kgo.DisableAutoCommit(),
-	)
+	)...)
 	if err != nil {
 		slog.Error("Failed to create Kafka client", "error", err)
 		os.Exit(1)
@@ -74,7 +96,14 @@ func main() {
 	defer cl.Close()
 
 	consumer := kafka.NewConsumer(cl, sseBroker)
-	go consumer.Start(ctx)
+	// Waited on at shutdown: an in-flight offset commit runs on a WithoutCancel context and must
+	// be allowed to finish rather than abandoned when main returns.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		consumer.Start(ctx)
+	}()
 
 	// 4. Start HTTP Server
 	mux := http.NewServeMux()
@@ -123,31 +152,42 @@ func main() {
 	// between an empty dashboard and a dashboard that is honestly unavailable.
 	probes := health.New(health.DBCheck("crdb", db))
 	probes.Register(mux)
+	mux.Handle("/metrics", telemetry.MetricsHandler())
 
 	server := &http.Server{
 		Addr:              ":8080",
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    64 << 10,
+		// No WriteTimeout: /api/stream is SSE and a stream has no natural end. Slow clients are
+		// bounded by the broker's per-client buffer and eviction instead.
 	}
 
+	// A listener failure is reported to the main goroutine, not os.Exit()ed from here: exiting
+	// inside the goroutine skipped every deferred Close above (pool, Kafka client, telemetry).
+	serverErr := make(chan error, 1)
 	go func() {
 		slog.Info("Starting HTTP server on :8080")
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Error("HTTP server failed", "error", err)
-			os.Exit(1)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErr <- err
 		}
 	}()
 
-	// Graceful shutdown
 	// Broker running, consumer wired, server serving: only now is this instance able to answer a
 	// stream request with real data.
 	probes.MarkStarted()
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	<-sigChan
-
-	slog.Info("Shutting down gracefully...")
+	select {
+	case <-sigChan:
+		slog.Info("Shutting down gracefully...")
+	case err := <-serverErr:
+		slog.Error("HTTP server failed", "error", err)
+	}
+	cancel()
 
 	// Bounded, and on a FRESH context rather than the app one. Two reasons, both of which bite here
 	// specifically: `ctx` is cancelled by the deferred cancel() as soon as main returns, and passing
@@ -159,6 +199,7 @@ func main() {
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		slog.Error("graceful shutdown did not finish cleanly", "error", err)
 	}
+	wg.Wait()
 }
 
 // env returns the value of k, or def when unset or empty.

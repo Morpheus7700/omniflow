@@ -37,6 +37,7 @@ import (
 	"time"
 
 	commv1 "omniflow/contracts/communication/v1"
+	"omniflow/internal/platform/kafkaconf"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -63,7 +64,20 @@ func run() error {
 
 	action := env("SEED_ACTION", "full")
 	mode := env("SEED_MODE", "outbox")
-	brokers := strings.Split(env("KAFKA_BROKERS", "localhost:9092"), ",")
+	// The seeder runs on the host against the compose-published broker, so unlike the services it
+	// keeps a localhost default; TLS/SASL variables are honoured the same way.
+	kopts, err := kafkaconf.Options(func(k string) string {
+		if v := os.Getenv(k); v != "" {
+			return v
+		}
+		if k == "KAFKA_BROKERS" {
+			return "localhost:9092"
+		}
+		return ""
+	})
+	if err != nil {
+		return fmt.Errorf("kafka config: %w", err)
+	}
 	dsn := env("CRDB_DSN", "postgres://root@localhost:26257/omniflow?sslmode=disable")
 
 	if action == "approve-only" {
@@ -85,7 +99,7 @@ func run() error {
 		traceParent := env("SEED_TRACE_PARENT", newTraceParent())
 
 		log.Printf("approving existing workflow event_id=%s sequence_engine_key=%d", eventID, seqKey)
-		if err := produceApproval(ctx, brokers, eventID, traceParent, seqKey); err != nil {
+		if err := produceApproval(ctx, kopts, eventID, traceParent, seqKey); err != nil {
 			return fmt.Errorf("produce approval: %w", err)
 		}
 		return nil
@@ -128,11 +142,11 @@ func run() error {
 			return err
 		}
 	case "email":
-		if err := seedEmail(ctx, brokers, eventID, traceParent, aggregateID, seqKey); err != nil {
+		if err := seedEmail(ctx, kopts, eventID, traceParent, aggregateID, seqKey); err != nil {
 			return err
 		}
 	case "inventory":
-		if err := seedInventory(ctx, brokers, eventID, traceParent, aggregateID, seqKey); err != nil {
+		if err := seedInventory(ctx, kopts, eventID, traceParent, aggregateID, seqKey); err != nil {
 			return err
 		}
 		fmt.Printf("SEED_EVENT_ID=%s\n", eventID)
@@ -159,7 +173,7 @@ func run() error {
 		return nil
 	}
 
-	if err := produceApproval(ctx, brokers, eventID, traceParent, seqKey); err != nil {
+	if err := produceApproval(ctx, kopts, eventID, traceParent, seqKey); err != nil {
 		return fmt.Errorf("produce approval: %w", err)
 	}
 
@@ -186,7 +200,7 @@ func seedOutbox(ctx context.Context, conn *pgx.Conn, eventID, traceParent, aggre
 
 // seedEmail produces a raw (unclassified) vendor email to CommBot's inbound topic and lets the real
 // CommBot classify + write its own outbox row.
-func seedEmail(ctx context.Context, brokers []string, eventID, traceParent, aggregateID string, seqKey uint64) error {
+func seedEmail(ctx context.Context, kopts []kgo.Opt, eventID, traceParent, aggregateID string, seqKey uint64) error {
 	email := buildVendorEmail(eventID, traceParent, aggregateID, seqKey, false)
 	// email mode needs fetchable, allowlisted HTTPS URIs (CommBot's zero-trust quarantine boundary).
 	email.SecureSubjectUri = env("SUBJECT_URI", email.SecureSubjectUri)
@@ -196,10 +210,10 @@ func seedEmail(ctx context.Context, brokers []string, eventID, traceParent, aggr
 	if err != nil {
 		return fmt.Errorf("marshal vendor email: %w", err)
 	}
-	return produce(ctx, brokers, orchestrationInputTopic, aggregateID, value)
+	return produce(ctx, kopts, orchestrationInputTopic, aggregateID, value)
 }
 
-func produceApproval(ctx context.Context, brokers []string, eventID, traceParent string, seqKey uint64) error {
+func produceApproval(ctx context.Context, kopts []kgo.Opt, eventID, traceParent string, seqKey uint64) error {
 	approval := &commv1.HumanApprovalEvent{
 		EventId:           eventID,
 		TraceParent:       traceParent,
@@ -210,11 +224,11 @@ func produceApproval(ctx context.Context, brokers []string, eventID, traceParent
 	if err != nil {
 		return fmt.Errorf("marshal approval: %w", err)
 	}
-	return produce(ctx, brokers, approvalTopic, eventID, value)
+	return produce(ctx, kopts, approvalTopic, eventID, value)
 }
 
-func produce(ctx context.Context, brokers []string, topic, key string, value []byte) error {
-	cl, err := kgo.NewClient(kgo.SeedBrokers(brokers...))
+func produce(ctx context.Context, kopts []kgo.Opt, topic, key string, value []byte) error {
+	cl, err := kgo.NewClient(kopts...)
 	if err != nil {
 		return fmt.Errorf("kafka client: %w", err)
 	}
@@ -343,7 +357,7 @@ func logSafe(s string) string {
 	return strings.NewReplacer("\r", `\r`, "\n", `\n`).Replace(s)
 }
 
-func seedInventory(ctx context.Context, brokers []string, eventID, traceParent, aggregateID string, seqKey uint64) error {
+func seedInventory(ctx context.Context, kopts []kgo.Opt, eventID, traceParent, aggregateID string, seqKey uint64) error {
 	now := timestamppb.Now()
 
 	movTypeStr := env("SEED_INV_MOVEMENT_TYPE", "receipt")
@@ -398,5 +412,5 @@ func seedInventory(ctx context.Context, brokers []string, eventID, traceParent, 
 		return fmt.Errorf("marshal inventory movement: %w", err)
 	}
 
-	return produce(ctx, brokers, "omniflow.inventory.movement.v1", sku, value)
+	return produce(ctx, kopts, "omniflow.inventory.movement.v1", sku, value)
 }

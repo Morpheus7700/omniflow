@@ -35,7 +35,9 @@ Two consequences worth knowing before you fight them:
 ## Start here every session → the knowledge base
 **`docs/kb/INDEX.md`** is an Obsidian-style vault — read it first to restore context cheaply instead
 of re-deriving from code. `docs/kb/05-gotchas.md` is the highest-value note (the recurring bugs);
-read it before editing scripts, consumers, or schema. Architecture decisions live in `docs/adr/`.
+read it before editing scripts, consumers, or schema. Architecture decisions live in `docs/adr/`
+(six of them, each naming the test that guards it); deferred options that are NOT decisions live in
+`docs/specs/`.
 
 ## Current mandate — "Make It Real"
 Prove the existing core RUNS end-to-end and SURVIVES failure. STOP adding blueprint surface

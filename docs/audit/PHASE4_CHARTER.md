@@ -1,3 +1,6 @@
+> **HISTORY.** A point-in-time audit or charter, kept for its reasoning. Not maintained as a
+> description of the current system — see `docs/kb/INDEX.md` and `docs/adr/`.
+
 # OmniFlow — Phase 4 (Inventory Intelligence + BI Star Schema) Audit Charter
 
 The constraints the Sentinel will grade against. Scaffold to these so Phase 4 passes on first review.

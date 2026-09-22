@@ -1,3 +1,6 @@
+> **HISTORY.** A point-in-time audit or charter, kept for its reasoning. Not maintained as a
+> description of the current system — see `docs/kb/INDEX.md` and `docs/adr/`.
+
 # OmniFlow — Phase 3 (P2P Orchestrator) Audit Charter
 
 **Purpose:** the constraints the Principal Council will grade against. Scaffold to these so Phase 3 passes on first review.

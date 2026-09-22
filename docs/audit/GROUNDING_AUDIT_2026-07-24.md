@@ -1,3 +1,6 @@
+> **HISTORY.** A point-in-time audit or charter, kept for its reasoning. Not maintained as a
+> description of the current system — see `docs/kb/INDEX.md` and `docs/adr/`.
+
 # Grounding + Independent Audit — 2026-07-24 (Sentinel, from disk)
 
 > Done by Claude directly against disk (no Antigravity round). This is the pre-push gate review the

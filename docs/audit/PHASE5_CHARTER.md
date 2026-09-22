@@ -1,3 +1,6 @@
+> **HISTORY.** A point-in-time audit or charter, kept for its reasoning. Not maintained as a
+> description of the current system — see `docs/kb/INDEX.md` and `docs/adr/`.
+
 # OmniFlow — Phase 5 (Real-Time Viz) Audit Charter
 
 Research- and council-grounded constraints the Sentinel will grade against. The service is a streaming gateway + a Next.js/R3F front end rendering the live P2P flow for an MD demo and for hiring managers.

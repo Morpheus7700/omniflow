@@ -1,3 +1,6 @@
+> **HISTORY.** A point-in-time audit or charter, kept for its reasoning. Not maintained as a
+> description of the current system — see `docs/kb/INDEX.md` and `docs/adr/`.
+
 # Sentinel Audit — Round: docker-compose + crdb-init plan (2026-07-23)
 
 Auditor: Claude (Principal Sentinel). Builder: Antigravity (Gemini).

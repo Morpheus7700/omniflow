@@ -9,7 +9,10 @@ there is **no `librdkafka` and no C toolchain** anywhere in the build or the con
 > tidy`) to clear them.
 
 ## 1. Prerequisites
-- **Go 1.25+** (both `go.mod` files declare `go 1.25.0`).
+- **Go** — the exact toolchain is pinned by the `toolchain` directive in both `go.mod` files, and
+  the `go` command downloads it for you. That directive is the single pin: CI reads it through
+  `setup-go`'s `go-version-file` and the Dockerfiles pin the matching `golang` image by digest.
+- **Node** — the Active LTS line named in `frontend/.nvmrc`, matching the frontend image.
 - **`buf`** (<https://buf.build>) — the contracts import `buf/validate/validate.proto`. That schema is
   **vendored in-tree** at `third_party/proto/buf/validate/validate.proto` and listed as a local module
   in `buf.yaml`; it is *not* fetched from the Buf Schema Registry. `buf.yaml` declares no `deps:`.

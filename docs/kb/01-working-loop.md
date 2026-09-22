@@ -9,7 +9,10 @@ because they were learned the hard way and still apply to a single agent auditin
 
 ## How a change lands
 
-`master` is branch-protected: **9 required checks, `strict: true`, `enforce_admins: true`**. There
+`master` is branch-protected: **every gating CI job is a required check**, `strict: true`,
+`enforce_admins: true`. The list is whatever `gh api repos/Morpheus7700/omniflow/branches/master/protection`
+returns — do not restate a count here, it rots (it read "9" for a month after the tenth job landed).
+Today that is: build + vet + unit tests (both modules) · lint (golangci-lint + shellcheck) · frontend (lint + typecheck + build) · govulncheck (gating) · integration (testcontainers) · security scan (gosec + trivy) · the six boot proofs · CodeQL (go + javascript-typescript). There
 are no direct pushes, including for the repo owner. So:
 
 1. Branch off an up-to-date `master`.

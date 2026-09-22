@@ -1,6 +1,7 @@
 # 02 · Architecture — the Event Spine
 
-Immutable baseline: **Kafka (KRaft) ← CockroachDB v24.3 native JSON changefeed → services**.
+Immutable baseline: **Kafka (KRaft) ← CockroachDB native JSON changefeed → services** (the pinned
+versions live in `docker-compose.yml`; Dependabot owns them, and a version named here rots).
 Transactional outbox + changefeed (no dual-write). Protobuf contracts + `buf.validate`. Go strict
 hexagonal. OTel W3C traceparent. `sequence_engine_key` is an **HLC key carried as a STRING
 end-to-end** (avoid JS float64 precision loss); rendering is gated by the changefeed `resolved`

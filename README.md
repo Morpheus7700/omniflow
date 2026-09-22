@@ -107,8 +107,11 @@ partition permanently on the first poison message.
 
 ## Tech stack & decisions (ADRs in brief)
 
-- **CockroachDB v24.3 native JSON changefeeds** for CDC. Not Debezium — the database is the CDC engine.
-  No license key needed: a single-node v24.3+ cluster runs Kafka-sink changefeeds license-free.
+- **CockroachDB native JSON changefeeds** for CDC. Not Debezium — the database is the CDC engine.
+  No license key needed: a single-node v24.3+ cluster runs Kafka-sink changefeeds license-free. The
+  pinned version lives in `docker-compose.yml` (Dependabot owns it; a version named in prose here
+  would rot). The stack follows CockroachDB's **Regular** release line — the optional odd-minor
+  "Innovation" releases are ignored in `dependabot.yml` on purpose.
 - **Kafka (KRaft, single-node)** as the event bus, on the JVM image `apache/kafka` — deliberately
   *not* `apache/kafka-native`, whose GraalVM image ships no JRE and so cannot run the shell-script
   health probe, leaving every boot job hanging.
@@ -143,6 +146,10 @@ highest-risk logic is exercised through its ports with in-memory fakes:
 | `commbot/…/outbound/llm` | The zero-trust quarantine boundary: allowlist checked *before* DNS, suffix/prefix/userinfo confusion rejected, and an allowlisted host that resolves inward (cloud-metadata `169.254.169.254`, loopback, RFC1918) still refused. |
 | `commbot/…/core/domain` | Domain→protobuf enum mapping is an explicit switch, not a numeric cast. The cast it replaced assumed a hand-written `iota` block and a *generated* proto enum would stay numerically aligned forever; inserting one value in the wire contract would have republished every subsequent event under the wrong intent, with nothing to error on. Also asserts a value that wraps under `int32` cannot become a valid enum. |
 | `internal/platform/health` | Liveness must ignore dependencies while readiness must not — an orchestrator *kills* a container whose liveness probe fails, so a DB blip that failed liveness would restart the fleet. Also: readiness is false before wiring completes, a hung dependency times out rather than hanging, and one slow check cannot poison the next. |
+| `p2p-orchestrator/internal/core` | The orchestration logic itself, through a fake `Checkpointer`: the run to the human gate with the configured lease, an approval producing an audited `HumanApproved` event (with a hostile `approved_by` containing quotes and braces), duplicate and stray approvals as no-ops, an approval for an unknown workflow as *transient* (the changefeed may deliver the trigger second), `FailWorkflow` exactly-once and never over a COMPLETED workflow, and the expiry sweep skipping a contended row rather than blocking on it. |
+| `internal/platform/{kafkaconf,retry,telemetry}` | SASL refused without TLS; a malformed retry setting falling back loudly; and — a regression test written after it broke every service at once — `telemetry.Init` must succeed with an empty environment, and its semconv schema must equal the SDK's `resource.Default()`, because `resource.Merge` refuses two schema URLs. |
+| `internal/platform` (drift) | The five packages duplicated into `services/viz-gateway` (it is a separate module and cannot import them) are parsed and compared with comments stripped, so a fix applied to one copy and not the other fails the build instead of waiting for an incident. |
+| `frontend/src` (vitest) | The store's merge/dedup/bound invariants on exact `BigInt` keys, the `useEventBuffer` no-gap/no-dup handover driven by a scripted `EventSource`, reconnect reported distinctly from a first connection, the gateway's JSON error shape surfaced instead of a parse error, and the windowed ledger rendering ~20 rows out of 5000. |
 
 **Tier 2 — integration (`-tags=integration`, ephemeral real CockroachDB via testcontainers).** Covers
 what a fake cannot honestly assert, because the guarantee *is* the SQL: single-transaction atomicity
@@ -169,7 +176,7 @@ matters, since `procurement_schema.sql` declares a foreign key onto `workflows(i
 |---|---|---|
 | `boot stack + seed E2E` | `scripts/e2e.sh` | one seeded procurement event flows through the real changefeed spine + HITL suspend/resume and its `sequence_engine_key` reaches the SSE stream |
 | `test durable checkpoint resume` | `scripts/failtest_killed_pod.sh` | orchestrator killed mid-workflow resumes from its durable checkpoint and completes exactly once |
-| `test exactly-once delivery` | `scripts/failtest_exactly_once.sh` | a duplicate approval produces no extra outbox rows, ledger entries, or workflows |
+| `test exactly-once delivery suppression` | `scripts/failtest_exactly_once.sh` | a duplicate approval produces no extra outbox rows, ledger entries, or workflows |
 | `test FIFO late-arrival restatement` | `scripts/failtest_fifo_restatement.sh` | a receipt arriving after a later consumption restates the SKU's FIFO cost basis in HLC order |
 | `test DLQ poison-pill routing` | `scripts/failtest_dlq_poison.sh` | an undecodable message is routed to the `.dlq` topic, its source offset is committed, and a valid message behind it still processes — i.e. the partition is not wedged |
 | `test agent exactly-once effect` | `scripts/failtest_agent_exactly_once.sh` | the drafting agent calls a model *outside* the workflow transaction — it must, or a multi-second LLM call would hold a row lock — so node execution is at-least-once by construction. Kills the orchestrator mid-workflow and asserts the resumed run issues no second purchase order: at-least-once execution, exactly-once **effect**, enforced by a deterministic idempotency key rather than by hoping the crash does not happen |
@@ -187,12 +194,27 @@ whole changefeed spine. When it breaks, which tier goes red tells you where.
 Two Go modules, both build with the Kafka client compiled statically:
 
 ```bash
+make check          # what CI's fast tier runs: gofmt, build, vet, -race tests, lint, frontend
+make help           # every target
+```
+
+Spelled out, if you would rather not use make:
+
+```bash
 # root module (commbot, p2p-orchestrator, inventory-intelligence, tools)
-CGO_ENABLED=0 go build ./... && go vet ./... && go test ./...
+CGO_ENABLED=0 go build ./... && go vet ./... && go test -race ./...
 
 # viz-gateway is its own module
-cd services/viz-gateway && CGO_ENABLED=0 go build ./... && go vet ./... && go test ./...
+cd services/viz-gateway && CGO_ENABLED=0 go build ./... && go vet ./... && go test -race ./...
+
+# frontend
+cd frontend && npm ci && npm run lint && npx tsc --noEmit && npm test && npm run build
 ```
+
+The Go toolchain has **one** pin: the `toolchain` directive in both `go.mod` files. CI reads it via
+`setup-go`'s `go-version-file`, the Dockerfiles pin the matching `golang` image by digest, and your
+local `go` downloads it automatically. There is no version number to keep in step in a YAML file —
+that design is why a CI job once drifted onto a stdlib the project never shipped.
 
 `go test ./...` runs Tier 1 only — no Docker, no services, sub-second. The integration suite is behind
 a build tag so it cannot slow that path down or require a daemon to be present:
@@ -215,20 +237,59 @@ The same script runs unchanged in GitHub Actions. If you ever run against a mult
 the stack picks them up automatically; a free Enterprise license is available for individuals and
 companies under $10M revenue at <https://www.cockroachlabs.com/get-cockroachdb/enterprise/>.
 
-### Cloud Deployments (CockroachDB Serverless & Cloud Run)
+### Published images
 
-To deploy to GCP Cloud Run and use CockroachDB Serverless (which offers a generous free tier of 5 GiB storage and 50M RUs/month), inject the connection string as `DATABASE_URL` (and `CRDB_DSN`) into your environment or CI pipeline:
+Tagging `v*` publishes the five deployable images to GHCR with an SBOM, SLSA provenance, a keyless
+cosign signature and a GitHub build-provenance attestation — so what you pull is verifiable rather
+than merely available:
 
 ```bash
-export DATABASE_URL="postgresql://<user>:<password>@<your-serverless-host>:26257/omniflow"
-export CRDB_DSN="${DATABASE_URL}"
+cosign verify ghcr.io/morpheus7700/omniflow/commbot:<tag> \
+  --certificate-identity-regexp 'https://github.com/Morpheus7700/omniflow/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
-# Only for a MULTI-node cluster; a single node needs neither of these:
+gh attestation verify oci://ghcr.io/morpheus7700/omniflow/commbot:<tag> --owner Morpheus7700
+```
+
+There is **no deployment pipeline in this repo** — no Terraform, no Helm, no Cloud Run config. That
+is a scope decision (see [`SCOPE.md`](SCOPE.md)), not an oversight: what is proven here is that the
+system runs and survives failure, and a half-written deployment would be the "compiles but never
+run" liability this project exists to kill.
+
+### Running against a managed CockroachDB or a secured broker
+
+Every service reads its DSN and broker list from the environment; nothing assumes `localhost`.
+
+```bash
+export CRDB_DSN="postgresql://<user>:<password>@<host>:26257/omniflow"
+export KAFKA_BROKERS="broker-1:9093,broker-2:9093"
+
+# A broker that requires TLS and SASL — refused unless TLS is on, so it cannot be misconfigured
+# into sending a password in the clear:
+export KAFKA_TLS=true KAFKA_TLS_CA=/run/secrets/kafka-ca.pem
+export KAFKA_SASL_MECHANISM=SCRAM-SHA-512
+export KAFKA_SASL_USERNAME=… KAFKA_SASL_PASSWORD=…
+
+# Only for a MULTI-node cluster; a single node needs neither:
 # export CRDB_LICENSE="…"   CRDB_ORG="…"
 ```
 
-Every service reads its DSN and broker list from the environment, so nothing assumes `localhost`.
-Keep these in your platform's secret store — never in the repo (`.gitignore` covers `.env*`).
+`docker-compose.override.example.yml` shows the same knobs in compose form. Keep secrets in your
+platform's secret store — never in the repo (`.gitignore` covers `.env*`). `.env.example` documents
+every variable the system reads.
+
+### Watching it run
+
+```bash
+make up-observability   # the stack plus an OTel collector, Tempo, Prometheus and Grafana
+```
+
+Grafana comes up at <http://127.0.0.1:3001> with both datasources provisioned and one dashboard:
+records processed by outcome, dead-letters, retries, workflow transitions, expired approvals, agent
+spend and live SSE clients. Every service also exposes `/metrics` on its health port, and traces
+carry the same W3C `traceparent` the events do, so one procurement event is a single trace across
+four services. Without a collector configured the services still create spans — the ids reach the
+logs — but export nothing.
 
 ### The frontend is a frontend
 
@@ -256,7 +317,15 @@ The gateway origin comes from one build argument, `NEXT_PUBLIC_API_BASE` (see
   re-requesting from the last `sequence_engine_key` you received.
 - **Concurrent SSE streams are capped** at `VIZ_MAX_SSE_CLIENTS` (default 100). Past it the gateway
   answers `503` with `Retry-After` instead of accumulating goroutines for connections that, being
-  SSE, never end on their own.
+  SSE, never end on their own. A client that stops draining is **evicted** rather than waited for —
+  the fan-out must not be held up by one stalled browser — and reconnects with `Last-Event-ID`.
+- **A dropped connection resumes.** The gateway keeps no backlog, so a browser that reconnects would
+  otherwise lose everything broadcast during the outage. It sends `Last-Event-ID`; the gateway
+  replays the gap from the replay repository, registering the client *before* the catch-up so
+  nothing is missed in between. Overlap is harmless: the client deduplicates on
+  (aggregate, sequence key).
+- **Replay is rate-limited per client** (`VIZ_REPLAY_RPS`, `VIZ_REPLAY_BURST`). The row cap bounds
+  one response; only a rate limit bounds how many responses a caller can pull.
 
 
 ---
@@ -273,8 +342,10 @@ services/
 frontend/                  Next.js settlement-ledger dashboard
 infrastructure/            CRDB schema · crdb-init (changefeeds) · kafka-init (topics)
 tools/                     seed (E2E harness) · mock-llm
-scripts/                   e2e + five failure-survival proofs
-.github/workflows/         CI: build/vet/unit · integration · six boot proofs · security scan
+scripts/                   lib.sh (the shared harness) + e2e and five failure-survival proofs
+.github/workflows/         CI: build/vet/-race · lint · frontend · integration · six boot proofs ·
+                           govulncheck (gating) · gosec+Trivy · CodeQL; release.yml publishes
+                           signed, attested images on a v* tag
 docs/                      knowledge base (docs/kb), audits, ADR trail
 ```
 

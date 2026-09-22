@@ -37,7 +37,10 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
+	// The semconv version MUST match the one the SDK's resource.Default() uses (see
+	// sdk/resource/builtin.go): resource.Merge refuses two different schema URLs, and the mismatch
+	// took every service down at boot on its first CI run.
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 	"net/http"
 )

@@ -25,7 +25,7 @@ x-service-defaults: &service-defaults
 services:
   cockroachdb:
     <<: *service-defaults
-    image: cockroachdb/cockroach:v26.2.5
+    image: cockroachdb/cockroach:v26.2.6
     # Single node: changefeeds run license-free here (v24.3+); a multi-node cluster would need a key.
     # --cache and --max-sql-memory are pinned so the node sizes itself to the limit below rather
     # than to the host, which on a 16 GB runner would otherwise mean a 4 GB cache per proof.
@@ -109,7 +109,7 @@ services:
 
   crdb-init:
     <<: *service-defaults
-    image: cockroachdb/cockroach:v26.2.5
+    image: cockroachdb/cockroach:v26.2.6
     depends_on:
       cockroachdb:
         condition: service_healthy

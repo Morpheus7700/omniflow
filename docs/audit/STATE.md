@@ -1,3 +1,9 @@
+> **HISTORY, NOT ARCHITECTURE.** This file is the running log of the build as it happened, kept for
+> the reasoning trail. It is NOT a description of the current system and is not maintained as one.
+> Claims here about Power BI, BigQuery, DAX, a warehouse tier, "no local Docker", Antigravity as a
+> builder, or a 3D/R3F frontend were all true when written and are all superseded — see
+> `docs/kb/INDEX.md` for current state and `docs/adr/` for the decisions that replaced them.
+
 # OmniFlow — Sentinel State Ledger (2026-07-21)
 
 Running audit state so the loop survives context resets. Antigravity scaffolds; Claude (Sentinel) audits from disk each round, patches contained bugs, returns a verdict + redirection prompt; the user pilots Antigravity manually.

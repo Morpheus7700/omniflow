@@ -47,10 +47,17 @@ progress toward it.
   `crdb-init` or referenced by any script, and unreachable files invite the reader to assume a system
   is larger than it is.
 - **WebSocket transport.** SSE is the deliberate choice for a read-only broadcast stream; a WebSocket
-  upgrade, if ever pursued, is its own scoped and audited change (`docs/adr/0001-sse-over-websocket.md`).
+  upgrade, if ever pursued, is its own scoped and audited change. The decision is ADR 0001; the
+  deferred spec is `docs/specs/websocket-upgrade.md`.
 - **Multi-node / multi-region CockroachDB.** Single-node is sufficient to prove the CDC and ordering
   properties; horizontal scale is an operational concern, not a correctness one.
-- **Production authn/z, tenancy, billing.** Not part of the systems-design thesis.
+- **Production authn/z, tenancy, billing.** Not part of the systems-design thesis. The read model is
+  origin-allowlisted, rate-limited and capped, and the event spine can be pointed at a TLS+SASL
+  broker — but nothing authenticates a *caller*, and SECURITY.md says so plainly rather than letting
+  the controls imply otherwise.
+- **A deployment pipeline.** No Terraform, no Helm, no Cloud Run config. Tagging `v*` publishes
+  signed, attested images to GHCR; where they run is out of scope. A half-written deployment would be
+  exactly the "compiles but never run" liability this project exists to kill.
 
 ## Known constraints & honest caveats
 
@@ -58,9 +65,11 @@ progress toward it.
   v24.3+ licensing needs no key (changefeeds included). crdb-init, the proof scripts, and CI run
   license-free and fail loudly if a key ever turns out to be required — they never skip silently. A free
   Enterprise license (`CRDB_LICENSE` / `CRDB_ORG`) is only relevant for a multi-node deployment.
-- **No local Docker daemon was used during development.** All boot/failure proofs are authored to run in
-  GitHub Actions (or any Docker host); their first real execution is the CI run. This is intentional —
-  it forces the proofs to be genuine rather than validated against a hand-held local environment.
+- **The proofs are authored for CI first.** They run on any Docker host, including this machine now
+  that Docker Desktop is installed — but CI is the authority, because only CI runs the full matrix on
+  a clean machine. That ordering is deliberate: a proof validated only against a hand-held local
+  environment is not a proof. (This bullet read "no local Docker daemon was used" for a month after
+  that stopped being true, which is its own lesson about environment claims in documentation.)
 - **Locked correctness core.** The DAG engine, CommBot core domain, the orchestrator schema and
   suspend/HITL logic, and the inventory valuation/ledger are treated as locked — changes to them are
   reviewed as regressions. The single sanctioned schema deviation is the additive
@@ -68,6 +77,10 @@ progress toward it.
 
 ## Definition of done for the current milestone
 
-The repo is public and the four CI boot proofs (`boot stack + seed E2E` and the three failure tests)
-are green on `master`. Everything up to that gate is built and audited; the gate itself is the first
-end-to-end execution of the real stack.
+**Met.** The repo is public, `master` is branch-protected, and the full suite — build/vet/`-race`
+unit tests, lint, frontend (lint/typecheck/test/build), govulncheck as a gating CVE scan, the
+testcontainers integration suite, six boot proofs and CodeQL — is green on every PR.
+
+The next milestone is not more surface. It is the backlog in [`docs/kb/04-progress-ledger.md`]:
+lease-TTL reclaim beyond the sweep, a DLQ re-drive tool, and a trace slice screenshot from the
+observability profile. Each is small, each is provable, and none of them is a new service.

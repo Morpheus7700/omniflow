@@ -1,3 +1,9 @@
+> **This is a deferred SPEC, not a decision.** It describes what a WebSocket upgrade WOULD look
+> like if the SSE decision (ADR 0001) were ever revisited. Nothing here is implemented, and parts of
+> it describe a frontend that no longer exists: the React-Three-Fiber 3D flow-graph and its HUD were
+> replaced by the settlement-ledger dashboard in July 2026, and the build arg is `NEXT_PUBLIC_API_BASE`,
+> not `NEXT_PUBLIC_SSE_URL`. Read it as an option, not as a description of the system.
+
 # WebSocket Upgrade Spec (viz-gateway ⇄ frontend)
 
 Status: **SPEC — do not build until E2E (Prompt 4) is green.** SSE is correct and works today; we do

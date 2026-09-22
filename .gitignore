@@ -49,7 +49,8 @@ Thumbs.db
 Architecture base */
 **/Architecture base */
 # A second notes vault that duplicated docs/kb/, which is the canonical one — two vaults each
-# claiming to be "the source of truth" is worse than one.
+# claiming to be "the source of truth" is worse than one. Moved out of the tree on 2026-09-22; the
+# ignore stays so a stray copy cannot reappear in a commit.
 /truth/
 
 # ---- Generated protobuf note ----

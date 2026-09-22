@@ -11,6 +11,9 @@ themselves now). Without it every `docker compose exec` that names an in-contain
 exits 127. See [[05-gotchas]].
 
 ## Build / vet (must exit 0)
+
+`make check` runs all of it — gofmt, build, vet, `-race` tests, golangci-lint, shellcheck, and the
+frontend's lint + typecheck. `make help` lists every target. Spelled out:
 ```bash
 # Root module (omniflow):
 CGO_ENABLED=0 go build ./...

@@ -377,9 +377,12 @@ frontend build proof, which matters because `npm run build` is unusable locally 
   `bash scripts/e2e.sh > run.log 2>&1; RC=$?`. Piping also truncates away the assertion lines you
   need. The tell that a run really failed: `e2e.sh` dumps `docker compose logs` ONLY on non-zero, so
   a wall of container logs means failure no matter what the exit code appears to say.
-- **`jq` is NOT installed in the Git-Bash environment.** Any script or Monitor piping through `jq`
-  silently produces nothing every iteration and looks like "no events yet". Use `gh … --jq` (gh ships
-  jq internally) or `--template`.
+- ~~**`jq` is NOT installed in the Git-Bash environment.**~~ **False as of 2026-09-22** — `jq` is on
+  PATH (`command -v jq` → `…/WinGet/Links/jq`). It was true when written, and the entry had no date
+  and no way to re-derive it, which is exactly the failure this note's own preamble warns about.
+  The `.claude/` hooks depend on it and three of them **fail closed** without it, so a machine that
+  lacks it cannot edit or run anything until it is installed. The durable advice is unchanged:
+  `gh … --jq` works regardless, because gh ships jq internally.
 - **`if git push …| tail -2; then break; fi` NEVER retries.** A pipeline's exit status is its *last*
   command, so `tail` (always 0) masks the push failure and the loop breaks on the first attempt.
   Capture separately: `OUT=$(git push 2>&1); RC=$?`. This matters here because the ISP drops

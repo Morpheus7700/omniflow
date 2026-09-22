@@ -4,7 +4,8 @@ Condensed status. Full detail in `docs/audit/STATE.md`.
 
 **Updated 2026-08-19.** The line this note carried for months — *"Nothing is pushed; no CI has
 run"* — was false long before it was corrected. Everything below is on a public, branch-protected
-`master` where every one of the 9 required checks runs on every PR.
+`master` where every required check runs on every PR (the list is in the protection settings —
+see [[01-working-loop]]).
 
 ## Make-It-Real prompts
 | Prompt | What | Status |
@@ -16,7 +17,7 @@ run"* — was false long before it was corrected. Everything below is on a publi
 | 5 | Failure tests: killed-pod resume + exactly-once | ✅ Antigravity built, Sentinel patched 4 bugs |
 | 6 | Inventory ingress repair + FIFO restatement test | ✅ Antigravity built, Sentinel patched 2 bugs |
 
-## What each proof does (all CI-only — no local Docker)
+## What each proof does (CI is the authority; they also run locally, Docker permitting)
 - `scripts/e2e.sh` → the golden path ([[02-architecture]]) reaches the SSE stream.
 - `scripts/failtest_killed_pod.sh` → durable checkpoint resume: kill+restart orchestrator mid-suspend,
   approve, assert `final_step` ledger count == 1 and workflow COMPLETED.
@@ -59,7 +60,9 @@ what each one turned out to be is more useful than the fact it is finished.
    lock). That makes node execution at-least-once by construction, so the guarantee proven is
    exactly-once *effect*, enforced by a deterministic idempotency key and asserted by
    `scripts/failtest_agent_exactly_once.sh` across a mid-workflow kill.
-4. Still deferred: the **WebSocket upgrade**, `docs/adr/0001-sse-over-websocket.md`.
+4. Still deferred: the **WebSocket upgrade**. The decision to use SSE is ADR 0001; the upgrade
+   spec lives at `docs/specs/websocket-upgrade.md`, deliberately outside `docs/adr/` so a deferred
+   option cannot be mistaken for a decision.
 
 ## What is actually next
 
@@ -78,7 +81,7 @@ Code scanning is at **zero open alerts** and gosec reports 0 issues in both modu
   real boundary needs an authenticating proxy or a gateway token, which this system does not claim.
 
 - **One repo setting only a human can change.** `test agent exactly-once effect` passes on every PR
-  but is not among the 9 required contexts, so it cannot block a merge. Dependabot alerts are now
+  but was not among the required contexts, so it could not block a merge. Dependabot alerts are now
   **enabled** (it has already opened and landed its first bump), which closes the other half of what
   this bullet used to say.
 - ~~**Bound the remaining DB/Kafka calls**, and give the binaries a self-probe mode~~ **Done, with
@@ -114,8 +117,12 @@ Code scanning is at **zero open alerts** and gosec reports 0 issues in both modu
   the boundary: `SEED_EVENT_ID` must now be a UUID.
 
 ## Backlog (not blocking)
-Lease-TTL reclaim enforcement (`owner_pod`/`lease_expires_at` written but not reaped); human-approval
-admin producer; OTLP→Grafana/Tempo trace slice; Phase-4 restatement replay-from-checkpoint (currently
-replays from 0).
+Lease-TTL reclaim BEYOND the sweep — the sweep now fails a workflow whose approval never came
+(`ReapExpiredApprovals`), but a lease held by a pod that died mid-node is still only released by the
+NOWAIT contention path rather than actively reclaimed; human-approval admin producer (today the
+seeder is the only producer to `p2p.approval.v1`); a DLQ re-drive tool (`tools/dlq-redrive`) — the
+`attempt` counter is a constant `1`, so a re-driven record collides on the idempotency key and can
+never re-execute; a screenshot of one real cross-service trace from the observability profile
+(`make up-observability`); Phase-4 restatement replay-from-checkpoint (currently replays from 0).
 
 Related: [[01-working-loop]] · [[06-build-and-test]]

@@ -1,6 +1,6 @@
 module omniflow
 
-go 1.25.0
+go 1.26.0
 
 // The single Go toolchain pin for CI, the Docker builders and developers alike — see the note above
 // `jobs:` in .github/workflows/e2e.yml. Bump this and the golang image digests together when
@@ -20,7 +20,7 @@ require (
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.45.0
 	go.opentelemetry.io/otel/sdk v1.45.0
 	go.opentelemetry.io/otel/trace v1.45.0
-	golang.org/x/time v0.15.0
+	golang.org/x/time v0.16.0
 	google.golang.org/protobuf v1.36.12
 )
 

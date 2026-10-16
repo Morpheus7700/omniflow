@@ -132,7 +132,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Node 24 matches frontend/Dockerfile's builder stage (Active LTS), for the same reason the Go
       # toolchain matches the Go images: CI should exercise the runtime that ships.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: frontend/.nvmrc
           cache: npm
@@ -237,7 +237,7 @@ jobs:
         run: bash scripts/e2e.sh
       - name: Upload container logs
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: proof-logs-e2e
           path: .proof-logs/
@@ -260,7 +260,7 @@ jobs:
         run: bash scripts/failtest_killed_pod.sh
       - name: Upload container logs
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: proof-logs-resume
           path: .proof-logs/
@@ -283,7 +283,7 @@ jobs:
         run: bash scripts/failtest_exactly_once.sh
       - name: Upload container logs
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: proof-logs-exactly-once
           path: .proof-logs/
@@ -306,7 +306,7 @@ jobs:
         run: bash scripts/failtest_fifo_restatement.sh
       - name: Upload container logs
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: proof-logs-restatement
           path: .proof-logs/
@@ -333,7 +333,7 @@ jobs:
         run: bash scripts/failtest_dlq_poison.sh
       - name: Upload container logs
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: proof-logs-dlq-poison
           path: .proof-logs/
@@ -361,7 +361,7 @@ jobs:
         run: bash scripts/failtest_agent_exactly_once.sh
       - name: Upload container logs
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: proof-logs-agent-exactly-once
           path: .proof-logs/
@@ -412,19 +412,19 @@ jobs:
       # than fail the job for a reason unrelated to the diff.
       - name: upload gosec (root)
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           sarif_file: gosec-root.sarif
           category: gosec-root
       - name: upload gosec (viz-gateway)
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           sarif_file: gosec-viz.sarif
           category: gosec-viz
       - name: upload Trivy
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           sarif_file: trivy.sarif
           category: trivy

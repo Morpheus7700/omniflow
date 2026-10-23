@@ -332,7 +332,7 @@ services:
   otel-collector:
     <<: *service-defaults
     profiles: [observability]
-    image: otel/opentelemetry-collector-contrib:0.161.0
+    image: otel/opentelemetry-collector-contrib:0.163.1-386
     command: ["--config=/etc/otelcol/config.yaml"]
     volumes:
       - ./infrastructure/observability/otel-collector.yaml:/etc/otelcol/config.yaml:ro

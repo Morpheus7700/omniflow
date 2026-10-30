@@ -359,7 +359,7 @@ services:
   prometheus:
     <<: *service-defaults
     profiles: [observability]
-    image: prom/prometheus:v3.14.0
+    image: prom/prometheus:v3.15.1
     volumes:
       - ./infrastructure/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     ports:
